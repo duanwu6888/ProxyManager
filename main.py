@@ -10,6 +10,7 @@ import secrets
 from datetime import datetime
 from pathlib import Path
 
+import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, Response, flash, g, jsonify, redirect, render_template_string, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -21,6 +22,8 @@ app.secret_key = "proxy-manager-dev-secret"
 
 CSV_FILE = Path("proxy_check_results.csv")
 CONNECT_TIMEOUT_SECONDS = 5
+IPIFY_URL = "https://api.ipify.org?format=json"
+IP_API_JSON_URL = "http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,as,query,message"
 UNKNOWN = "Unknown"
 PROXY_TYPES = ("HTTP", "HTTPS", "SOCKS5", "SOCKS4")
 STATE_FILTERS = ("California", "New York", "Texas", "Florida")
@@ -242,6 +245,41 @@ PAGE_TEMPLATE = """
             </div>
         </section>
 
+        <section class="row g-3 mb-4">
+            <div class="col-6 col-xl-3">
+                <div class="card dashboard-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Average Latency</div>
+                        <div class="h3 mb-0">{{ dashboard.avg_latency_ms }} ms</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-xl-3">
+                <div class="card dashboard-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Fastest Proxy</div>
+                        <div class="fw-semibold proxy-address">{{ dashboard.fastest_proxy or "-" }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-xl-3">
+                <div class="card dashboard-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Slowest Proxy</div>
+                        <div class="fw-semibold proxy-address">{{ dashboard.slowest_proxy or "-" }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-xl-3">
+                <div class="card dashboard-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Average Success Rate</div>
+                        <div class="h3 mb-0">{{ dashboard.avg_success_rate }}%</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <section class="row g-4 mb-4">
             <div class="col-12 col-xl-6">
                 <div class="card border-0 shadow-sm">
@@ -362,6 +400,15 @@ PAGE_TEMPLATE = """
                                     {% endfor %}
                                 </select>
                             </div>
+                            <div class="col-12 col-md-3">
+                                <label for="sort" class="form-label">Sort</label>
+                                <select id="sort" name="sort" class="form-select">
+                                    <option value="">Default</option>
+                                    <option value="score" {% if selected_sort == 'score' %}selected{% endif %}>Score</option>
+                                    <option value="latency" {% if selected_sort == 'latency' %}selected{% endif %}>Latency</option>
+                                    <option value="success_rate" {% if selected_sort == 'success_rate' %}selected{% endif %}>Success Rate</option>
+                                </select>
+                            </div>
                             <div class="col-12 col-md-auto d-flex gap-2">
                                 <button type="submit" class="btn btn-outline-primary mobile-full">
                                     &#25628;&#32034;
@@ -426,6 +473,10 @@ PAGE_TEMPLATE = """
                                     <th>Status</th>
                                     <th>Score</th>
                                     <th>Success Rate</th>
+                                    <th>Exit IP</th>
+                                    <th>Latency</th>
+                                    <th>ISP</th>
+                                    <th>ASN</th>
                                     <th>&#22791;&#27880;</th>
                                     <th>&#26816;&#27979;&#29366;&#24577;</th>
                                     <th>&#22269;&#23478;</th>
@@ -454,6 +505,10 @@ PAGE_TEMPLATE = """
                                         </td>
                                         <td>{{ proxy.score }}</td>
                                         <td>{{ proxy.success_rate }}%</td>
+                                        <td class="proxy-address">{{ proxy.last_exit_ip or proxy.exit_ip or "-" }}</td>
+                                        <td>{{ proxy.last_latency_ms or proxy.latency_ms or "-" }}</td>
+                                        <td class="text-break">{{ proxy.last_isp or proxy.isp or "-" }}</td>
+                                        <td class="text-break">{{ proxy.last_asn or proxy.asn or "-" }}</td>
                                         <td>{{ proxy.label or "-" }}</td>
                                         <td>
                                             {% if proxy.last_connectable is none %}
@@ -496,7 +551,7 @@ PAGE_TEMPLATE = """
                                     </tr>
                                 {% else %}
                                     <tr>
-                                        <td colspan="13" class="text-center text-secondary py-5">
+                                        <td colspan="17" class="text-center text-secondary py-5">
                                             &#26242;&#26080;&#20195;&#29702;&#65292;&#35831;&#20808;&#28155;&#21152; IP &#21644;&#31471;&#21475;&#12290;
                                         </td>
                                     </tr>
@@ -832,6 +887,10 @@ def init_db() -> None:
                 consecutive_failures INTEGER NOT NULL DEFAULT 0,
                 success_count INTEGER NOT NULL DEFAULT 0,
                 failure_count INTEGER NOT NULL DEFAULT 0,
+                exit_ip TEXT NOT NULL DEFAULT '',
+                latency_ms INTEGER,
+                isp TEXT NOT NULL DEFAULT '',
+                asn TEXT NOT NULL DEFAULT '',
                 label TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -847,6 +906,10 @@ def init_db() -> None:
                 country TEXT NOT NULL,
                 state TEXT NOT NULL,
                 city TEXT NOT NULL,
+                exit_ip TEXT NOT NULL DEFAULT '',
+                latency_ms INTEGER,
+                isp TEXT NOT NULL DEFAULT '',
+                asn TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY(proxy_id) REFERENCES proxies(id) ON DELETE CASCADE
             );
 
@@ -902,10 +965,26 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "consecutive_failures": "INTEGER NOT NULL DEFAULT 0",
         "success_count": "INTEGER NOT NULL DEFAULT 0",
         "failure_count": "INTEGER NOT NULL DEFAULT 0",
+        "exit_ip": "TEXT NOT NULL DEFAULT ''",
+        "latency_ms": "INTEGER",
+        "isp": "TEXT NOT NULL DEFAULT ''",
+        "asn": "TEXT NOT NULL DEFAULT ''",
     }
     for column, definition in proxy_column_defaults.items():
         if column not in columns:
             db.execute(f"ALTER TABLE proxies ADD COLUMN {column} {definition}")
+    check_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(checks)").fetchall()
+    }
+    check_column_defaults = {
+        "exit_ip": "TEXT NOT NULL DEFAULT ''",
+        "latency_ms": "INTEGER",
+        "isp": "TEXT NOT NULL DEFAULT ''",
+        "asn": "TEXT NOT NULL DEFAULT ''",
+    }
+    for column, definition in check_column_defaults.items():
+        if column not in check_columns:
+            db.execute(f"ALTER TABLE checks ADD COLUMN {column} {definition}")
     ensure_table(
         db,
         "users",
@@ -1064,38 +1143,111 @@ def validate_proxy(ip: str, port_text: str) -> tuple[int | None, str | None]:
     return port, None
 
 
-def check_connection(ip: str, port: int) -> tuple[bool, str]:
+def proxy_url(proxy: sqlite3.Row) -> str:
+    scheme = proxy["proxy_type"].lower()
+    if scheme == "socks5":
+        scheme = "socks5h"
+    return f"{scheme}://{proxy['ip']}:{proxy['port']}"
+
+
+def proxy_requests_config(proxy: sqlite3.Row) -> dict[str, str]:
+    url = proxy_url(proxy)
+    return {"http": url, "https": url}
+
+
+def query_exit_location(exit_ip: str) -> dict[str, str]:
     try:
-        with socket.create_connection((ip, port), timeout=CONNECT_TIMEOUT_SECONDS):
-            return True, "\u8fde\u63a5\u6210\u529f"
-    except OSError as exc:
-        return False, str(exc)
+        response = requests.get(IP_API_JSON_URL.format(ip=exit_ip), timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as exc:
+        return {
+            "country": UNKNOWN,
+            "state": UNKNOWN,
+            "city": UNKNOWN,
+            "isp": UNKNOWN,
+            "asn": UNKNOWN,
+            "error": str(exc),
+        }
 
-
-def get_location(ip: str) -> dict[str, str]:
-    url = (
-        f"http://ip-api.com/csv/{ip}"
-        "?fields=status,country,regionName,city,message&lang=zh-CN"
-    )
-
-    try:
-        with urllib.request.urlopen(url, timeout=10) as response:
-            body = response.read().decode("utf-8").strip()
-    except urllib.error.URLError as exc:
-        return {"country": UNKNOWN, "state": UNKNOWN, "city": UNKNOWN, "error": str(exc)}
-
-    row = next(csv.reader([body]))
-    status = row[0] if row else "fail"
-    if status != "success":
-        message = row[4] if len(row) > 4 else "\u4f4d\u7f6e\u67e5\u8be2\u5931\u8d25"
-        return {"country": UNKNOWN, "state": UNKNOWN, "city": UNKNOWN, "error": message}
+    if data.get("status") != "success":
+        return {
+            "country": UNKNOWN,
+            "state": UNKNOWN,
+            "city": UNKNOWN,
+            "isp": UNKNOWN,
+            "asn": UNKNOWN,
+            "error": data.get("message", "location lookup failed"),
+        }
 
     return {
-        "country": row[1] if len(row) > 1 and row[1] else UNKNOWN,
-        "state": row[2] if len(row) > 2 and row[2] else UNKNOWN,
-        "city": row[3] if len(row) > 3 and row[3] else UNKNOWN,
+        "country": data.get("country") or UNKNOWN,
+        "state": data.get("regionName") or UNKNOWN,
+        "city": data.get("city") or UNKNOWN,
+        "isp": data.get("isp") or UNKNOWN,
+        "asn": data.get("as") or UNKNOWN,
         "error": "",
     }
+
+
+def verify_proxy(proxy: sqlite3.Row) -> dict[str, object]:
+    started_at = datetime.now()
+    try:
+        response = requests.get(
+            IPIFY_URL,
+            proxies=proxy_requests_config(proxy),
+            timeout=CONNECT_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        exit_ip = response.json().get("ip", "")
+        if not exit_ip:
+            raise requests.RequestException("ipify response did not include ip")
+    except (requests.RequestException, ValueError) as exc:
+        return {
+            "connectable": False,
+            "message": str(exc),
+            "exit_ip": "",
+            "latency_ms": None,
+            "country": UNKNOWN,
+            "state": UNKNOWN,
+            "city": UNKNOWN,
+            "isp": UNKNOWN,
+            "asn": UNKNOWN,
+        }
+
+    latency_ms = int((datetime.now() - started_at).total_seconds() * 1000)
+    location = query_exit_location(exit_ip)
+    message = "proxy verified"
+    if location["error"]:
+        message = f"proxy verified; location: {location['error']}"
+
+    return {
+        "connectable": True,
+        "message": message,
+        "exit_ip": exit_ip,
+        "latency_ms": latency_ms,
+        "country": location["country"],
+        "state": location["state"],
+        "city": location["city"],
+        "isp": location["isp"],
+        "asn": location["asn"],
+    }
+
+
+def latency_score_bonus(latency_ms: int | None) -> int:
+    if latency_ms is None:
+        return 0
+    if latency_ms <= 500:
+        return 3
+    if latency_ms <= 1000:
+        return 2
+    if latency_ms <= 2000:
+        return 1
+    if latency_ms >= 5000:
+        return -2
+    if latency_ms >= 3000:
+        return -1
+    return 0
 
 
 def run_check(proxy_id: int) -> sqlite3.Row | None:
@@ -1104,31 +1256,34 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
     if proxy is None:
         return None
 
-    connectable, message = check_connection(proxy["ip"], proxy["port"])
-    location = get_location(proxy["ip"])
-    if location["error"]:
-        message = f"{message}; location: {location['error']}"
+    result = verify_proxy(proxy)
+    connectable = bool(result["connectable"])
+    message = str(result["message"])
 
     checked_at = current_time()
     db.execute(
         """
         INSERT INTO checks
-            (proxy_id, checked_at, connectable, message, country, state, city)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (proxy_id, checked_at, connectable, message, country, state, city, exit_ip, latency_ms, isp, asn)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             proxy["id"],
             checked_at,
             1 if connectable else 0,
             message,
-            location["country"],
-            location["state"],
-            location["city"],
+            result["country"],
+            result["state"],
+            result["city"],
+            result["exit_ip"],
+            result["latency_ms"],
+            result["isp"],
+            result["asn"],
         ),
     )
     if connectable:
         new_status = "online"
-        new_score = min(100, proxy["score"] + 1)
+        new_score = min(100, proxy["score"] + 1 + latency_score_bonus(result["latency_ms"]))
         db.execute(
             """
             UPDATE proxies
@@ -1137,10 +1292,23 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
                 score = ?,
                 consecutive_failures = 0,
                 success_count = success_count + 1,
+                exit_ip = ?,
+                latency_ms = ?,
+                isp = ?,
+                asn = ?,
                 updated_at = ?
             WHERE id = ?
             """,
-            (new_status, new_score, checked_at, proxy["id"]),
+            (
+                new_status,
+                new_score,
+                result["exit_ip"],
+                result["latency_ms"],
+                result["isp"],
+                result["asn"],
+                checked_at,
+                proxy["id"],
+            ),
         )
     else:
         consecutive_failures = proxy["consecutive_failures"] + 1
@@ -1165,7 +1333,7 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
     return proxy
 
 
-def fetch_proxies(query: str = "", state: str = "") -> list[sqlite3.Row]:
+def fetch_proxies(query: str = "", state: str = "", sort_by: str = "") -> list[sqlite3.Row]:
     where = ""
     params: list[str] = []
     conditions: list[str] = []
@@ -1191,6 +1359,14 @@ def fetch_proxies(query: str = "", state: str = "") -> list[sqlite3.Row]:
     if conditions:
         where = "WHERE " + " AND ".join(conditions)
 
+    order_by = "p.created_at DESC, p.id DESC"
+    if sort_by == "score":
+        order_by = "p.score DESC, p.created_at DESC"
+    elif sort_by == "latency":
+        order_by = "CASE WHEN p.latency_ms IS NULL THEN 1 ELSE 0 END, p.latency_ms ASC"
+    elif sort_by == "success_rate":
+        order_by = "success_rate DESC, p.created_at DESC"
+
     return get_db().execute(
         """
         SELECT
@@ -1201,6 +1377,10 @@ def fetch_proxies(query: str = "", state: str = "") -> list[sqlite3.Row]:
             c.country,
             c.state,
             c.city,
+            c.exit_ip AS last_exit_ip,
+            c.latency_ms AS last_latency_ms,
+            c.isp AS last_isp,
+            c.asn AS last_asn,
             CASE
                 WHEN (p.success_count + p.failure_count) = 0 THEN 0
                 ELSE ROUND((p.success_count * 100.0) / (p.success_count + p.failure_count), 1)
@@ -1213,7 +1393,7 @@ def fetch_proxies(query: str = "", state: str = "") -> list[sqlite3.Row]:
             LIMIT 1
         )
         """ + where + """
-        ORDER BY p.created_at DESC, p.id DESC
+        ORDER BY """ + order_by + """
         """,
         params,
     ).fetchall()
@@ -1251,11 +1431,32 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
     for state in STATE_FILTERS:
         count = sum(1 for proxy in proxies if proxy["state"] == state)
         state_counts.append({"state": state, "count": count})
+    latencies = [
+        proxy["latency_ms"] for proxy in proxies
+        if proxy["latency_ms"] is not None and proxy["status"] == "online"
+    ]
+    avg_latency_ms = round(sum(latencies) / len(latencies)) if latencies else 0
+    fastest = min(
+        (proxy for proxy in proxies if proxy["latency_ms"] is not None),
+        key=lambda proxy: proxy["latency_ms"],
+        default=None,
+    )
+    slowest = max(
+        (proxy for proxy in proxies if proxy["latency_ms"] is not None),
+        key=lambda proxy: proxy["latency_ms"],
+        default=None,
+    )
+    rates = [proxy["success_rate"] for proxy in proxies if proxy["success_rate"] is not None]
+    avg_success_rate = round(sum(rates) / len(rates), 1) if rates else 0
 
     return {
         "online_rate": round((online / total) * 100, 1) if total else 0,
         "last_checked_at": last_checked_at,
         "state_counts": state_counts,
+        "avg_latency_ms": avg_latency_ms,
+        "fastest_proxy": f"{fastest['ip']}:{fastest['port']} ({fastest['latency_ms']} ms)" if fastest else "",
+        "slowest_proxy": f"{slowest['ip']}:{slowest['port']} ({slowest['latency_ms']} ms)" if slowest else "",
+        "avg_success_rate": avg_success_rate,
     }
 
 
@@ -1385,6 +1586,12 @@ def serialize_proxy(proxy: sqlite3.Row) -> dict[str, object]:
         "country": proxy["country"] or UNKNOWN,
         "state": proxy["state"] or UNKNOWN,
         "city": proxy["city"] or UNKNOWN,
+        "exit_ip": proxy["exit_ip"] or "",
+        "latency_ms": proxy["latency_ms"],
+        "isp": proxy["isp"] or "",
+        "asn": proxy["asn"] or "",
+        "success_rate": proxy["success_rate"],
+        "score": proxy["score"],
         "last_checked": proxy["last_checked_at"],
     }
 
@@ -1478,10 +1685,24 @@ def fetch_online_proxies(
             p.ip,
             p.port,
             p.proxy_type,
+            p.score,
+            p.latency_ms,
+            p.isp,
+            p.asn,
+            p.success_count,
+            p.failure_count,
             c.country,
             c.state,
             c.city,
-            c.checked_at AS last_checked_at
+            c.exit_ip,
+            c.latency_ms AS check_latency_ms,
+            c.isp AS check_isp,
+            c.asn AS check_asn,
+            c.checked_at AS last_checked_at,
+            CASE
+                WHEN (p.success_count + p.failure_count) = 0 THEN 0
+                ELSE ROUND((p.success_count * 100.0) / (p.success_count + p.failure_count), 1)
+            END AS success_rate
         FROM proxies p
         JOIN checks c ON c.id = (
             SELECT id FROM checks
@@ -1592,9 +1813,12 @@ def index():
         return auth_redirect
     query = request.args.get("q", "").strip()
     selected_state = request.args.get("state", "").strip()
+    selected_sort = request.args.get("sort", "").strip()
     if selected_state not in STATE_FILTERS:
         selected_state = ""
-    proxies = fetch_proxies(query, selected_state)
+    if selected_sort not in {"score", "latency", "success_rate"}:
+        selected_sort = ""
+    proxies = fetch_proxies(query, selected_state, selected_sort)
     return render_template_string(
         PAGE_TEMPLATE,
         UNKNOWN=UNKNOWN,
@@ -1606,6 +1830,7 @@ def index():
         recent_checks=fetch_recent_checks(),
         scheduler_config=scheduler_settings(),
         selected_state=selected_state,
+        selected_sort=selected_sort,
         state_filters=STATE_FILTERS,
         stats=build_stats(proxies),
     )
@@ -1875,6 +2100,12 @@ def export_csv():
             "last_checked_at",
             "connectable",
             "failure_reason",
+            "exit_ip",
+            "latency_ms",
+            "isp",
+            "asn",
+            "success_rate",
+            "score",
             "country",
             "state",
             "city",
@@ -1890,6 +2121,12 @@ def export_csv():
                 proxy["last_checked_at"] or "",
                 "" if proxy["last_connectable"] is None else proxy["last_connectable"],
                 proxy["last_message"] if proxy["last_connectable"] == 0 else "",
+                proxy["last_exit_ip"] or proxy["exit_ip"] or "",
+                proxy["last_latency_ms"] or proxy["latency_ms"] or "",
+                proxy["last_isp"] or proxy["isp"] or "",
+                proxy["last_asn"] or proxy["asn"] or "",
+                proxy["success_rate"],
+                proxy["score"],
                 proxy["country"] or "",
                 proxy["state"] or "",
                 proxy["city"] or "",
