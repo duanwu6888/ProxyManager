@@ -6,10 +6,12 @@ import socket
 import urllib.error
 import urllib.request
 import random
+import secrets
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, Response, flash, g, jsonify, redirect, render_template_string, request, url_for
+from flask import Flask, Response, flash, g, jsonify, redirect, render_template_string, request, session, url_for
+from werkzeug.security import check_password_hash, generate_password_hash
 
 
 app = Flask(__name__)
@@ -21,7 +23,6 @@ CONNECT_TIMEOUT_SECONDS = 5
 UNKNOWN = "Unknown"
 PROXY_TYPES = ("HTTP", "HTTPS", "SOCKS5", "SOCKS4")
 STATE_FILTERS = ("California", "New York", "Texas", "Florida")
-API_TOKEN = "proxymanager-v2-token"
 
 PAGE_TEMPLATE = """
 <!doctype html>
@@ -124,6 +125,12 @@ PAGE_TEMPLATE = """
                 </a>
                 <a href="{{ url_for('api_docs') }}" class="btn btn-outline-primary mobile-full">
                     API v2
+                </a>
+                <a href="{{ url_for('api_keys_page') }}" class="btn btn-outline-dark mobile-full">
+                    API Keys
+                </a>
+                <a href="{{ url_for('logout') }}" class="btn btn-outline-secondary mobile-full">
+                    Logout
                 </a>
                 <a href="{{ url_for('health') }}" class="btn btn-outline-secondary mobile-full">
                     Health
@@ -564,7 +571,7 @@ API_DOCS_TEMPLATE = """
         <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
             <div>
                 <h1 class="h3 mb-1">Proxy Pool API v2</h1>
-                <div class="text-secondary">All API requests require <code>?token={{ api_token }}</code>.</div>
+                <div class="text-secondary">All API requests require the <code>X-API-Key</code> header.</div>
             </div>
             <a href="{{ url_for('index') }}" class="btn btn-outline-secondary align-self-start">Back to Dashboard</a>
         </div>
@@ -577,7 +584,7 @@ API_DOCS_TEMPLATE = """
                         {% for endpoint in endpoints %}
                             <div class="list-group-item">
                                 <div class="fw-semibold">{{ endpoint.method }} {{ endpoint.path }}</div>
-                                <code>{{ base_url }}{{ endpoint.path }}?token={{ api_token }}</code>
+                                <code>{{ base_url }}{{ endpoint.path }}</code>
                             </div>
                         {% endfor %}
                     </div>
@@ -587,7 +594,8 @@ API_DOCS_TEMPLATE = """
                 <div class="card border-0 shadow-sm mb-4">
                     <div class="card-header bg-white fw-semibold">Example Request</div>
                     <div class="card-body">
-                        <pre class="bg-light border rounded p-3 mb-0">GET {{ base_url }}/api/random?token={{ api_token }}</pre>
+                        <pre class="bg-light border rounded p-3 mb-0">GET {{ base_url }}/api/random
+X-API-Key: {{ example_api_key }}</pre>
                     </div>
                 </div>
                 <div class="card border-0 shadow-sm">
@@ -609,6 +617,144 @@ API_DOCS_TEMPLATE = """
                 </div>
             </div>
         </section>
+    </main>
+</body>
+</html>
+"""
+
+AUTH_TEMPLATE = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }} - ProxyManager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>body { background: #f4f6f9; }</style>
+</head>
+<body>
+    <main class="container py-5">
+        <div class="row justify-content-center">
+            <div class="col-12 col-sm-10 col-md-6 col-xl-4">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">{{ title }}</div>
+                    <div class="card-body">
+                        {% with messages = get_flashed_messages() %}
+                            {% if messages %}
+                                {% for message in messages %}
+                                    <div class="alert alert-info">{{ message }}</div>
+                                {% endfor %}
+                            {% endif %}
+                        {% endwith %}
+                        <form method="post" class="vstack gap-3">
+                            <div>
+                                <label for="username" class="form-label">Username</label>
+                                <input id="username" name="username" class="form-control" required autofocus>
+                            </div>
+                            <div>
+                                <label for="password" class="form-label">Password</label>
+                                <input id="password" name="password" type="password" class="form-control" required>
+                            </div>
+                            <button class="btn btn-primary w-100" type="submit">{{ button_text }}</button>
+                        </form>
+                    </div>
+                    <div class="card-footer bg-white text-center">
+                        {% if mode == "login" %}
+                            <a href="{{ url_for('register') }}">Create an account</a>
+                        {% else %}
+                            <a href="{{ url_for('login') }}">Already have an account?</a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+</body>
+</html>
+"""
+
+API_KEYS_TEMPLATE = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>API Keys - ProxyManager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f4f6f9; }
+        .navbar { border-bottom: 1px solid #dde3ec; }
+        code { word-break: break-all; }
+        @media (max-width: 575.98px) {
+            .mobile-full { width: 100%; }
+            .table { min-width: 860px; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg bg-white">
+        <div class="container-fluid px-4">
+            <a class="navbar-brand fw-bold text-decoration-none" href="{{ url_for('index') }}">ProxyManager</a>
+            <div class="d-flex flex-column flex-sm-row gap-2">
+                <a href="{{ url_for('api_docs') }}" class="btn btn-outline-primary mobile-full">API Docs</a>
+                <a href="{{ url_for('logout') }}" class="btn btn-outline-secondary mobile-full">Logout</a>
+            </div>
+        </div>
+    </nav>
+    <main class="container-fluid px-4 py-4">
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-info">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        <section class="row g-3 mb-4">
+            <div class="col-6 col-xl-3"><div class="card border-0 shadow-sm"><div class="card-body"><div class="text-secondary small">Total Users</div><div class="display-6 fw-semibold">{{ metrics.total_users }}</div></div></div></div>
+            <div class="col-6 col-xl-3"><div class="card border-0 shadow-sm"><div class="card-body"><div class="text-secondary small">Total API Keys</div><div class="display-6 fw-semibold">{{ metrics.total_api_keys }}</div></div></div></div>
+            <div class="col-6 col-xl-3"><div class="card border-0 shadow-sm"><div class="card-body"><div class="text-secondary small">Requests Today</div><div class="display-6 fw-semibold">{{ metrics.today_requests }}</div></div></div></div>
+            <div class="col-6 col-xl-3"><div class="card border-0 shadow-sm"><div class="card-body"><div class="text-secondary small">Online Proxies</div><div class="display-6 fw-semibold text-success">{{ metrics.online_proxies }}</div></div></div></div>
+        </section>
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white fw-semibold">Create API Key</div>
+            <div class="card-body">
+                <form action="{{ url_for('create_api_key') }}" method="post">
+                    <button class="btn btn-primary mobile-full" type="submit">Create Key</button>
+                </form>
+            </div>
+        </div>
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white fw-semibold">Your API Keys</div>
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr><th>API Key</th><th>Status</th><th>Created</th><th>Calls</th><th class="text-end">Actions</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for key in api_keys %}
+                            <tr>
+                                <td><code>{{ key.api_key }}</code></td>
+                                <td><span class="badge {% if key.status == 'active' %}text-bg-success{% else %}text-bg-secondary{% endif %}">{{ key.status }}</span></td>
+                                <td>{{ key.created_at }}</td>
+                                <td>{{ key.call_count }}</td>
+                                <td>
+                                    <div class="d-flex justify-content-end gap-2">
+                                        {% if key.status == 'active' %}
+                                            <form action="{{ url_for('disable_api_key', key_id=key.id) }}" method="post"><button class="btn btn-sm btn-outline-warning" type="submit">Disable</button></form>
+                                        {% else %}
+                                            <form action="{{ url_for('enable_api_key', key_id=key.id) }}" method="post"><button class="btn btn-sm btn-outline-success" type="submit">Enable</button></form>
+                                        {% endif %}
+                                        <form action="{{ url_for('delete_api_key', key_id=key.id) }}" method="post" onsubmit="return confirm('Delete this API key?');"><button class="btn btn-sm btn-outline-danger" type="submit">Delete</button></form>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% else %}
+                            <tr><td colspan="5" class="text-center text-secondary py-5">No API keys yet.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </main>
 </body>
 </html>
@@ -663,7 +809,26 @@ def init_db() -> None:
                 accessed_at TEXT NOT NULL,
                 endpoint TEXT NOT NULL,
                 client_ip TEXT NOT NULL,
-                success INTEGER NOT NULL
+                success INTEGER NOT NULL,
+                user_id INTEGER,
+                api_key_id INTEGER,
+                status INTEGER NOT NULL DEFAULT 200
+            );
+
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                api_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
             """
         )
@@ -678,6 +843,32 @@ def ensure_schema(db: sqlite3.Connection) -> None:
     }
     if "proxy_type" not in columns:
         db.execute("ALTER TABLE proxies ADD COLUMN proxy_type TEXT NOT NULL DEFAULT 'HTTP'")
+    ensure_table(
+        db,
+        "users",
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """,
+    )
+    ensure_table(
+        db,
+        "api_keys",
+        """
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            api_key TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+        """,
+    )
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS api_logs (
@@ -685,10 +876,26 @@ def ensure_schema(db: sqlite3.Connection) -> None:
             accessed_at TEXT NOT NULL,
             endpoint TEXT NOT NULL,
             client_ip TEXT NOT NULL,
-            success INTEGER NOT NULL
+            success INTEGER NOT NULL,
+            user_id INTEGER,
+            api_key_id INTEGER,
+            status INTEGER NOT NULL DEFAULT 200
         )
         """
     )
+    log_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(api_logs)").fetchall()
+    }
+    if "user_id" not in log_columns:
+        db.execute("ALTER TABLE api_logs ADD COLUMN user_id INTEGER")
+    if "api_key_id" not in log_columns:
+        db.execute("ALTER TABLE api_logs ADD COLUMN api_key_id INTEGER")
+    if "status" not in log_columns:
+        db.execute("ALTER TABLE api_logs ADD COLUMN status INTEGER NOT NULL DEFAULT 200")
+
+
+def ensure_table(db: sqlite3.Connection, _name: str, ddl: str) -> None:
+    db.execute(ddl)
 
 
 def import_csv_if_empty(db: sqlite3.Connection) -> None:
@@ -944,37 +1151,70 @@ def serialize_proxy(proxy: sqlite3.Row) -> dict[str, object]:
     }
 
 
-def log_api_request(endpoint: str, success: bool) -> None:
+def get_current_user() -> sqlite3.Row | None:
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    return get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
+def login_required():
+    if get_current_user() is None:
+        return redirect(url_for("login"))
+    return None
+
+
+def generate_api_key() -> str:
+    return "pm_" + secrets.token_urlsafe(32)
+
+
+def find_api_key() -> sqlite3.Row | None:
+    api_key = request.headers.get("X-API-Key", "").strip()
+    if not api_key:
+        return None
+    return get_db().execute(
+        """
+        SELECT k.*, u.username
+        FROM api_keys k
+        JOIN users u ON u.id = k.user_id
+        WHERE k.api_key = ? AND k.status = 'active'
+        """,
+        (api_key,),
+    ).fetchone()
+
+
+def log_api_request(endpoint: str, success: bool, api_key: sqlite3.Row | None, status_code: int) -> None:
     get_db().execute(
         """
-        INSERT INTO api_logs (accessed_at, endpoint, client_ip, success)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO api_logs
+            (accessed_at, endpoint, client_ip, success, user_id, api_key_id, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             current_time(),
             endpoint,
             request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip(),
             1 if success else 0,
+            api_key["user_id"] if api_key else None,
+            api_key["id"] if api_key else None,
+            status_code,
         ),
     )
     get_db().commit()
 
 
-def token_is_valid() -> bool:
-    return request.args.get("token", "") == API_TOKEN
-
-
 def api_error(message: str, status_code: int):
-    log_api_request(request.path, False)
+    log_api_request(request.path, False, None, status_code)
     response = jsonify({"success": False, "error": message})
     response.status_code = status_code
     return response
 
 
-def require_api_token():
-    if not token_is_valid():
-        return api_error("invalid token", 401)
-    return None
+def require_api_key():
+    api_key = find_api_key()
+    if api_key is None:
+        return None, api_error("invalid api key", 401)
+    return api_key, None
 
 
 def fetch_online_proxies(
@@ -1018,10 +1258,38 @@ def fetch_online_proxies(
     ).fetchall()
 
 
-def api_success(data):
-    log_api_request(request.path, True)
+def api_success(data, api_key: sqlite3.Row):
+    log_api_request(request.path, True, api_key, 200)
     count = len(data) if isinstance(data, list) else 0 if data is None else 1
     return jsonify({"success": True, "count": count, "data": data})
+
+
+def dashboard_metrics() -> dict[str, int]:
+    today = datetime.now().strftime("%Y-%m-%d")
+    return {
+        "total_users": get_db().execute("SELECT COUNT(*) FROM users").fetchone()[0],
+        "total_api_keys": get_db().execute("SELECT COUNT(*) FROM api_keys").fetchone()[0],
+        "today_requests": get_db().execute(
+            "SELECT COUNT(*) FROM api_logs WHERE accessed_at LIKE ?", (f"{today}%",)
+        ).fetchone()[0],
+        "online_proxies": len(fetch_online_proxies()),
+    }
+
+
+def user_api_keys(user_id: int) -> list[sqlite3.Row]:
+    return get_db().execute(
+        """
+        SELECT
+            k.*,
+            COUNT(l.id) AS call_count
+        FROM api_keys k
+        LEFT JOIN api_logs l ON l.api_key_id = k.id
+        WHERE k.user_id = ?
+        GROUP BY k.id
+        ORDER BY k.created_at DESC, k.id DESC
+        """,
+        (user_id,),
+    ).fetchall()
 
 
 def parse_proxy_line(line: str) -> tuple[str, str, str, str] | None:
@@ -1081,6 +1349,9 @@ def insert_proxy(ip: str, port: int, proxy_type: str, label: str) -> bool:
 
 @app.route("/")
 def index():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
     query = request.args.get("q", "").strip()
     selected_state = request.args.get("state", "").strip()
     if selected_state not in STATE_FILTERS:
@@ -1100,8 +1371,134 @@ def index():
     )
 
 
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        if not username or not password:
+            flash("Username and password are required.")
+            return redirect(url_for("register"))
+        try:
+            cursor = get_db().execute(
+                """
+                INSERT INTO users (username, password_hash, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (username, generate_password_hash(password), current_time()),
+            )
+            get_db().commit()
+            session["user_id"] = cursor.lastrowid
+            flash("Account created.")
+            return redirect(url_for("index"))
+        except sqlite3.IntegrityError:
+            flash("Username already exists.")
+    return render_template_string(
+        AUTH_TEMPLATE,
+        title="Register",
+        button_text="Create Account",
+        mode="register",
+    )
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = get_db().execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        if user and check_password_hash(user["password_hash"], password):
+            session["user_id"] = user["id"]
+            flash("Logged in.")
+            return redirect(url_for("index"))
+        flash("Invalid username or password.")
+    return render_template_string(
+        AUTH_TEMPLATE,
+        title="Login",
+        button_text="Login",
+        mode="login",
+    )
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    flash("Logged out.")
+    return redirect(url_for("login"))
+
+
+@app.route("/api-keys")
+def api_keys_page():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    user = get_current_user()
+    return render_template_string(
+        API_KEYS_TEMPLATE,
+        api_keys=user_api_keys(user["id"]),
+        metrics=dashboard_metrics(),
+    )
+
+
+@app.route("/api-keys", methods=["POST"])
+def create_api_key():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    user = get_current_user()
+    get_db().execute(
+        """
+        INSERT INTO api_keys (user_id, api_key, status, created_at)
+        VALUES (?, ?, 'active', ?)
+        """,
+        (user["id"], generate_api_key(), current_time()),
+    )
+    get_db().commit()
+    flash("API key created.")
+    return redirect(url_for("api_keys_page"))
+
+
+def update_api_key_status(key_id: int, status: str):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    user = get_current_user()
+    get_db().execute(
+        "UPDATE api_keys SET status = ? WHERE id = ? AND user_id = ?",
+        (status, key_id, user["id"]),
+    )
+    get_db().commit()
+    flash(f"API key {status}.")
+    return redirect(url_for("api_keys_page"))
+
+
+@app.route("/api-keys/<int:key_id>/enable", methods=["POST"])
+def enable_api_key(key_id: int):
+    return update_api_key_status(key_id, "active")
+
+
+@app.route("/api-keys/<int:key_id>/disable", methods=["POST"])
+def disable_api_key(key_id: int):
+    return update_api_key_status(key_id, "disabled")
+
+
+@app.route("/api-keys/<int:key_id>/delete", methods=["POST"])
+def delete_api_key(key_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    user = get_current_user()
+    get_db().execute("DELETE FROM api_keys WHERE id = ? AND user_id = ?", (key_id, user["id"]))
+    get_db().commit()
+    flash("API key deleted.")
+    return redirect(url_for("api_keys_page"))
+
+
 @app.route("/proxies", methods=["POST"])
 def create_proxy():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
     ip = request.form.get("ip", "").strip()
     port_text = request.form.get("port", "").strip()
     label = request.form.get("label", "").strip()
@@ -1122,6 +1519,9 @@ def create_proxy():
 
 @app.route("/proxies/import", methods=["POST"])
 def import_proxies():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
     text = request.form.get("proxies", "")
     added = 0
     skipped = 0
@@ -1156,6 +1556,9 @@ def import_proxies():
 
 @app.route("/proxies/<int:proxy_id>/check", methods=["POST"])
 def check_proxy_route(proxy_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
     proxy = run_check(proxy_id)
     if proxy is None:
         flash("\u4ee3\u7406\u4e0d\u5b58\u5728\u3002")
@@ -1166,6 +1569,9 @@ def check_proxy_route(proxy_id: int):
 
 @app.route("/checks/run-all", methods=["POST"])
 def check_all():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
     proxies = get_db().execute("SELECT id FROM proxies ORDER BY id").fetchall()
     for proxy in proxies:
         run_check(proxy["id"])
@@ -1175,6 +1581,9 @@ def check_all():
 
 @app.route("/proxies/<int:proxy_id>/delete", methods=["POST"])
 def delete_proxy(proxy_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
     get_db().execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
     get_db().commit()
     flash("\u4ee3\u7406\u5df2\u5220\u9664\u3002")
@@ -1183,6 +1592,9 @@ def delete_proxy(proxy_id: int):
 
 @app.route("/proxies/delete-all", methods=["POST"])
 def delete_all_proxies():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
     deleted = get_db().execute("SELECT COUNT(*) FROM proxies").fetchone()[0]
     get_db().execute("DELETE FROM proxies")
     get_db().commit()
@@ -1192,6 +1604,9 @@ def delete_all_proxies():
 
 @app.route("/export.csv")
 def export_csv():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(
@@ -1234,6 +1649,9 @@ def export_csv():
 
 @app.route("/api-docs")
 def api_docs():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
     endpoints = [
         {"method": "GET", "path": "/api/proxies"},
         {"method": "GET", "path": "/api/random"},
@@ -1243,7 +1661,7 @@ def api_docs():
     ]
     return render_template_string(
         API_DOCS_TEMPLATE,
-        api_token=API_TOKEN,
+        example_api_key="pm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         base_url=request.host_url.rstrip("/"),
         endpoints=endpoints,
     )
@@ -1251,49 +1669,49 @@ def api_docs():
 
 @app.route("/api/proxies")
 def api_proxies():
-    token_error = require_api_token()
-    if token_error:
-        return token_error
+    api_key, key_error = require_api_key()
+    if key_error:
+        return key_error
     proxies = [serialize_proxy(proxy) for proxy in fetch_online_proxies()]
-    return api_success(proxies)
+    return api_success(proxies, api_key)
 
 
 @app.route("/api/random")
 def api_random():
-    token_error = require_api_token()
-    if token_error:
-        return token_error
+    api_key, key_error = require_api_key()
+    if key_error:
+        return key_error
     proxies = fetch_online_proxies()
     if not proxies:
-        return api_success(None)
-    return api_success(serialize_proxy(random.choice(proxies)))
+        return api_success(None, api_key)
+    return api_success(serialize_proxy(random.choice(proxies)), api_key)
 
 
 @app.route("/api/country/<path:country>")
 def api_country(country: str):
-    token_error = require_api_token()
-    if token_error:
-        return token_error
+    api_key, key_error = require_api_key()
+    if key_error:
+        return key_error
     proxies = [serialize_proxy(proxy) for proxy in fetch_online_proxies(country=country)]
-    return api_success(proxies)
+    return api_success(proxies, api_key)
 
 
 @app.route("/api/state/<path:state>")
 def api_state(state: str):
-    token_error = require_api_token()
-    if token_error:
-        return token_error
+    api_key, key_error = require_api_key()
+    if key_error:
+        return key_error
     proxies = [serialize_proxy(proxy) for proxy in fetch_online_proxies(state=state)]
-    return api_success(proxies)
+    return api_success(proxies, api_key)
 
 
 @app.route("/api/city/<path:city>")
 def api_city(city: str):
-    token_error = require_api_token()
-    if token_error:
-        return token_error
+    api_key, key_error = require_api_key()
+    if key_error:
+        return key_error
     proxies = [serialize_proxy(proxy) for proxy in fetch_online_proxies(city=city)]
-    return api_success(proxies)
+    return api_success(proxies, api_key)
 
 
 @app.route("/health")
