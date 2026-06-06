@@ -1,0 +1,15 @@
+﻿checked_at,ip,port,connectable,message,country,state,city
+2026-06-07 01:06:55,8.8.8.8,53,是,可连接,United States,Virginia,Ashburn
+2026-06-07 01:16:10,8.8.8.8,53,yes,connectable,United States,Virginia,Ashburn
+2026-06-07 01:18:48,8.8.8.8,53,yes,connectable,United States,Virginia,Ashburn
+2026-06-07 01:21:28,8.8.8.8,53,是,connectable,United States,Virginia,Ashburn
+2026-06-07 01:22:10,8.8.8.8,53,是,connectable,United States,Virginia,Ashburn
+2026-06-07 01:24:16,8.8.8.8,53,是,connectable,United States,Virginia,Ashburn
+2026-06-07 01:24:21,8.8.8.8,53,是,connectable,United States,Virginia,Ashburn
+2026-06-07 01:27:29,8.8.8.8,53,是,可连接,美国,弗吉尼亚州,Ashburn
+2026-06-07 01:27:52,8.8.8.8,53,是,可连接,美国,弗吉尼亚州,阿什本
+2026-06-07 01:28:11,8.8.8.8,53,是,可连接,美国,弗吉尼亚州,阿什本
+2026-06-07 01:28:33,166.88.230.35,7778,是,可连接,美国,加州,洛杉矶
+2026-06-07 01:29:09,204.017.68,9868,否,连接失败: [Errno 11001] getaddrinfo failed,未知,未知,未知
+2026-06-07 01:29:12,204.017.68,9868,否,连接失败: [Errno 11001] getaddrinfo failed,未知,未知,未知
+2026-06-07 01:29:41,204.0.16.58,9868,是,可连接,美国,加州,洛杉矶
