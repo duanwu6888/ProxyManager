@@ -255,6 +255,9 @@ PAGE_TEMPLATE = """
                 <a href="{{ url_for('api_keys_page') }}" class="btn btn-outline-dark mobile-full">
                     API Keys
                 </a>
+                <a href="{{ url_for('providers_page') }}" class="btn btn-outline-dark mobile-full">
+                    来源管理
+                </a>
                 <a href="{{ url_for('logout') }}" class="btn btn-outline-secondary mobile-full">
                     Logout
                 </a>
@@ -407,6 +410,33 @@ PAGE_TEMPLATE = """
         </section>
 
         <section class="row g-3 mb-4">
+            <div class="col-12 col-xl-4">
+                <div class="card dashboard-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Top Provider</div>
+                        <div class="fw-semibold text-break">{{ dashboard.top_provider or "-" }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-xl-4">
+                <div class="card dashboard-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Provider Success Rate</div>
+                        <div class="h3 mb-0">{{ dashboard.provider_success_rate }}%</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-xl-4">
+                <div class="card dashboard-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Provider Latency</div>
+                        <div class="h3 mb-0">{{ dashboard.provider_latency }} ms</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="row g-3 mb-4">
             {% for reason in failure_summary_reasons %}
                 <div class="col-6 col-xl-3">
                     <div class="card dashboard-card border-0 shadow-sm">
@@ -506,6 +536,14 @@ PAGE_TEMPLATE = """
                                     {% endfor %}
                                 </select>
                             </div>
+                            <div>
+                                <label for="provider_id" class="form-label">代理来源</label>
+                                <select id="provider_id" name="provider_id" class="form-select">
+                                    {% for provider in providers %}
+                                        <option value="{{ provider.id }}">{{ provider.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
                             <button type="submit" class="btn btn-primary w-100">
                                 &#28155;&#21152;&#20195;&#29702;
                             </button>
@@ -546,6 +584,16 @@ PAGE_TEMPLATE = """
                                     <option value="score" {% if selected_sort == 'score' %}selected{% endif %}>按评分</option>
                                     <option value="latency" {% if selected_sort == 'latency' %}selected{% endif %}>按延迟</option>
                                     <option value="success_rate" {% if selected_sort == 'success_rate' %}selected{% endif %}>按成功率</option>
+                                    <option value="provider" {% if selected_sort == 'provider' %}selected{% endif %}>按来源</option>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-3">
+                                <label for="provider_filter" class="form-label">来源筛选</label>
+                                <select id="provider_filter" name="provider" class="form-select">
+                                    <option value="">全部来源</option>
+                                    {% for provider in providers %}
+                                        <option value="{{ provider.id }}" {% if selected_provider_id == provider.id %}selected{% endif %}>{{ provider.name }}</option>
+                                    {% endfor %}
                                 </select>
                             </div>
                             <div class="col-12 col-md-3">
@@ -582,6 +630,14 @@ PAGE_TEMPLATE = """
                     <div class="card-header bg-white fw-semibold">&#25209;&#37327;&#23548;&#20837;&#20195;&#29702;</div>
                     <div class="card-body">
                         <form action="{{ url_for('import_proxies') }}" method="post" class="vstack gap-3">
+                            <div>
+                                <label for="import_provider_id" class="form-label">导入来源</label>
+                                <select id="import_provider_id" name="provider_id" class="form-select">
+                                    {% for provider in providers %}
+                                        <option value="{{ provider.id }}">{{ provider.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
                             <textarea
                                 name="proxies"
                                 class="form-control"
@@ -629,6 +685,7 @@ PAGE_TEMPLATE = """
                             <thead class="table-light">
                                 <tr>
                                     <th class="cell-medium">&#20195;&#29702;</th>
+                                    <th class="cell-medium">来源</th>
                                     <th class="cell-tiny">类型</th>
                                     <th class="cell-small">池状态</th>
                                     <th class="cell-health">健康等级</th>
@@ -654,6 +711,7 @@ PAGE_TEMPLATE = """
                                 {% for proxy in proxies %}
                                     <tr>
                                         <td class="proxy-address fw-semibold">{{ proxy.ip }}:{{ proxy.port }}</td>
+                                        <td><div class="cell-compact" title="{{ proxy.provider_name or '默认来源' }}">{{ proxy.provider_name or "默认来源" }}</div></td>
                                         <td><span class="badge text-bg-dark">{{ proxy.proxy_type }}</span></td>
                                         <td>
                                             {% if proxy.status == 'online' %}
@@ -737,7 +795,7 @@ PAGE_TEMPLATE = """
                                         </td>
                                     </tr>
                                     <tr class="collapse diagnostic-row" id="history-{{ proxy.id }}">
-                                        <td colspan="20">
+                                        <td colspan="21">
                                             <div class="p-2">
                                                 <div class="fw-semibold mb-2">最近 10 次检测记录</div>
                                                 <div class="table-responsive">
@@ -781,7 +839,7 @@ PAGE_TEMPLATE = """
                                     </tr>
                                 {% else %}
                                     <tr>
-                                        <td colspan="20" class="text-center text-secondary py-5">
+                                        <td colspan="21" class="text-center text-secondary py-5">
                                             &#26242;&#26080;&#20195;&#29702;&#65292;&#35831;&#20808;&#28155;&#21152; IP &#21644;&#31471;&#21475;&#12290;
                                         </td>
                                     </tr>
@@ -1154,6 +1212,158 @@ API_KEYS_TEMPLATE = """
 </html>
 """
 
+PROVIDERS_TEMPLATE = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ProxyManager Providers</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f4f6f9; }
+        .table td, .table th { vertical-align: middle; }
+        @media (max-width: 575.98px) {
+            main.container-fluid { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+            .mobile-full { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+    <main class="container-fluid px-4 py-4">
+        <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
+            <div>
+                <h1 class="h3 mb-1">代理来源管理</h1>
+                <div class="text-secondary">管理 source_providers，并查看各来源质量统计。</div>
+            </div>
+            <div class="d-flex flex-column flex-sm-row gap-2">
+                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary mobile-full">返回后台</a>
+            </div>
+        </div>
+
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-info alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <section class="row g-4">
+            <div class="col-12 col-xl-4">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">新增来源</div>
+                    <div class="card-body">
+                        <form action="{{ url_for('create_provider') }}" method="post" class="vstack gap-3">
+                            <div>
+                                <label for="name" class="form-label">来源名称</label>
+                                <input id="name" name="name" class="form-control" placeholder="FreeProxyList" required>
+                            </div>
+                            <div>
+                                <label for="description" class="form-label">描述</label>
+                                <textarea id="description" name="description" class="form-control" rows="4" placeholder="来源说明、抓取地址或备注"></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary mobile-full">新增来源</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-12 col-xl-8">
+                <div class="card border-0 shadow-sm mb-4">
+                    <div class="card-header bg-white fw-semibold">来源统计</div>
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>来源名称</th>
+                                    <th>代理数量</th>
+                                    <th>成功率</th>
+                                    <th>平均延迟</th>
+                                    <th>平均评分</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for item in stats %}
+                                    <tr>
+                                        <td>{{ item.name }}</td>
+                                        <td>{{ item.proxy_count }}</td>
+                                        <td>{{ item.success_rate or 0 }}%</td>
+                                        <td>{{ item.avg_latency or "-" }}</td>
+                                        <td>{{ item.avg_score or "-" }}</td>
+                                    </tr>
+                                {% else %}
+                                    <tr><td colspan="5" class="text-center text-secondary py-4">暂无来源统计</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">来源列表</div>
+                    <div class="table-responsive">
+                        <table class="table table-striped mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>名称</th>
+                                    <th>描述</th>
+                                    <th>创建时间</th>
+                                    <th class="text-end">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for provider in providers %}
+                                    <tr>
+                                        <td colspan="4">
+                                            <form action="{{ url_for('update_provider', provider_id=provider.id) }}" method="post" class="row g-2 align-items-center">
+                                                <div class="col-12 col-md-3">
+                                                    <input name="name" class="form-control" value="{{ provider.name }}" required>
+                                                </div>
+                                                <div class="col-12 col-md-4">
+                                                    <input name="description" class="form-control" value="{{ provider.description }}">
+                                                </div>
+                                                <div class="col-12 col-md-2 text-secondary small">{{ provider.created_at }}</div>
+                                                <div class="col-12 col-md-3">
+                                                    <div class="d-flex justify-content-md-end gap-2">
+                                                        <button type="submit" class="btn btn-sm btn-outline-primary mobile-full">保存</button>
+                                                        <button
+                                                            type="submit"
+                                                            form="delete-provider-{{ provider.id }}"
+                                                            class="btn btn-sm btn-outline-danger mobile-full"
+                                                            {% if provider.id == 1 %}disabled{% endif %}
+                                                        >
+                                                            删除
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </form>
+                                            <form
+                                                id="delete-provider-{{ provider.id }}"
+                                                action="{{ url_for('delete_provider', provider_id=provider.id) }}"
+                                                method="post"
+                                                onsubmit="return confirm('删除来源后，该来源下代理会归入默认来源。确认删除？');"
+                                            ></form>
+                                        </td>
+                                    </tr>
+                                {% else %}
+                                    <tr><td colspan="4" class="text-center text-secondary py-4">暂无来源</td></tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+"""
+
 
 def get_db() -> sqlite3.Connection:
     if "db" not in g:
@@ -1190,10 +1400,19 @@ def init_db() -> None:
                 isp TEXT NOT NULL DEFAULT '',
                 asn TEXT NOT NULL DEFAULT '',
                 failure_reason TEXT NOT NULL DEFAULT '',
+                provider_id INTEGER,
                 label TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                FOREIGN KEY(provider_id) REFERENCES source_providers(id) ON DELETE SET NULL,
                 UNIQUE(ip, port)
+            );
+
+            CREATE TABLE IF NOT EXISTS source_providers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS checks (
@@ -1254,6 +1473,25 @@ def init_db() -> None:
 
 
 def ensure_schema(db: sqlite3.Connection) -> None:
+    ensure_table(
+        db,
+        "source_providers",
+        """
+        CREATE TABLE IF NOT EXISTS source_providers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """,
+    )
+    db.execute(
+        """
+        INSERT OR IGNORE INTO source_providers (id, name, description, created_at)
+        VALUES (1, '默认来源', '系统默认来源，用于已有或未指定来源的代理。', ?)
+        """,
+        (current_time(),),
+    )
     columns = {
         row["name"] for row in db.execute("PRAGMA table_info(proxies)").fetchall()
     }
@@ -1270,10 +1508,12 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "isp": "TEXT NOT NULL DEFAULT ''",
         "asn": "TEXT NOT NULL DEFAULT ''",
         "failure_reason": "TEXT NOT NULL DEFAULT ''",
+        "provider_id": "INTEGER",
     }
     for column, definition in proxy_column_defaults.items():
         if column not in columns:
             db.execute(f"ALTER TABLE proxies ADD COLUMN {column} {definition}")
+    db.execute("UPDATE proxies SET provider_id = 1 WHERE provider_id IS NULL")
     check_columns = {
         row["name"] for row in db.execute("PRAGMA table_info(checks)").fetchall()
     }
@@ -1376,8 +1616,8 @@ def import_csv_if_empty(db: sqlite3.Connection) -> None:
         now = current_time()
         db.execute(
             """
-            INSERT OR IGNORE INTO proxies (ip, port, proxy_type, label, created_at, updated_at)
-            VALUES (?, ?, 'HTTP', '', ?, ?)
+            INSERT OR IGNORE INTO proxies (ip, port, proxy_type, provider_id, label, created_at, updated_at)
+            VALUES (?, ?, 'HTTP', 1, '', ?, ?)
             """,
             (ip, port, now, now),
         )
@@ -1710,6 +1950,7 @@ def fetch_proxies(
     sort_by: str = "",
     health_filter: str = "",
     failure_reason_filter: str = "",
+    provider_id: int | None = None,
 ) -> list[sqlite3.Row]:
     where = ""
     params: list[str] = []
@@ -1726,17 +1967,21 @@ def fetch_proxies(
             OR c.state LIKE ?
             OR c.city LIKE ?
             OR c.failure_reason LIKE ?
+            OR sp.name LIKE ?
             )
             """
         )
         like_query = f"%{query}%"
-        params.extend([like_query] * 8)
+        params.extend([like_query] * 9)
     if state:
         conditions.append("c.state = ?")
         params.append(state)
     if failure_reason_filter:
         conditions.append("COALESCE(NULLIF(c.failure_reason, ''), NULLIF(p.failure_reason, '')) = ?")
         params.append(failure_reason_filter)
+    if provider_id:
+        conditions.append("p.provider_id = ?")
+        params.append(provider_id)
     if conditions:
         where = "WHERE " + " AND ".join(conditions)
 
@@ -1747,11 +1992,15 @@ def fetch_proxies(
         order_by = "CASE WHEN p.latency_ms IS NULL THEN 1 ELSE 0 END, p.latency_ms ASC"
     elif sort_by == "success_rate":
         order_by = "success_rate DESC, p.created_at DESC"
+    elif sort_by == "provider":
+        order_by = "sp.name COLLATE NOCASE ASC, p.created_at DESC"
 
     rows = get_db().execute(
         """
         SELECT
             p.*,
+            sp.name AS provider_name,
+            sp.description AS provider_description,
             c.checked_at AS last_checked_at,
             c.connectable AS last_connectable,
             c.message AS last_message,
@@ -1768,6 +2017,7 @@ def fetch_proxies(
                 ELSE ROUND((p.success_count * 100.0) / (p.success_count + p.failure_count), 1)
             END AS success_rate
         FROM proxies p
+        LEFT JOIN source_providers sp ON sp.id = p.provider_id
         LEFT JOIN checks c ON c.id = (
             SELECT id FROM checks
             WHERE proxy_id = p.id
@@ -1871,6 +2121,25 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
         top_isp_name, top_isp_count = max(isp_counts.items(), key=lambda item: item[1])
         top_isp = f"{top_isp_name} ({top_isp_count})"
 
+    provider_rows = provider_stats()
+    top_provider = ""
+    provider_success_rate = 0
+    provider_latency = 0
+    if provider_rows:
+        top_provider_row = max(provider_rows, key=lambda row: (row["proxy_count"], row["success_rate"] or 0))
+        top_provider = f"{top_provider_row['name']} ({top_provider_row['proxy_count']})"
+        success_rows = [row for row in provider_rows if row["proxy_count"]]
+        if success_rows:
+            provider_success_rate = round(
+                sum(row["success_rate"] or 0 for row in success_rows) / len(success_rows),
+                1,
+            )
+        latency_rows = [row for row in provider_rows if row["avg_latency"] is not None]
+        if latency_rows:
+            provider_latency = round(
+                sum(row["avg_latency"] or 0 for row in latency_rows) / len(latency_rows)
+            )
+
     failure_reason_counts = {reason: 0 for reason in FAILURE_REASON_SUMMARY}
     for row in get_db().execute(
         """
@@ -1901,6 +2170,9 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
         "slowest_proxy": f"{slowest['ip']}:{slowest['port']} ({slowest['latency_ms']} ms)" if slowest else "",
         "avg_success_rate": avg_success_rate,
         "top_isp": top_isp,
+        "top_provider": top_provider,
+        "provider_success_rate": provider_success_rate,
+        "provider_latency": provider_latency,
         "failure_reason_counts": failure_reason_counts,
     }
 
@@ -2028,6 +2300,7 @@ def serialize_proxy(proxy: sqlite3.Row) -> dict[str, object]:
         "ip": proxy["ip"],
         "port": proxy["port"],
         "proxy_type": proxy["proxy_type"],
+        "provider": proxy["provider_name"] if "provider_name" in proxy.keys() else "",
         "country": proxy["country"] or UNKNOWN,
         "state": proxy["state"] or UNKNOWN,
         "city": proxy["city"] or UNKNOWN,
@@ -2132,6 +2405,7 @@ def fetch_online_proxies(
             p.ip,
             p.port,
             p.proxy_type,
+            sp.name AS provider_name,
             p.score,
             p.latency_ms,
             p.isp,
@@ -2152,6 +2426,7 @@ def fetch_online_proxies(
                 ELSE ROUND((p.success_count * 100.0) / (p.success_count + p.failure_count), 1)
             END AS success_rate
         FROM proxies p
+        LEFT JOIN source_providers sp ON sp.id = p.provider_id
         JOIN checks c ON c.id = (
             SELECT id FROM checks
             WHERE proxy_id = p.id
@@ -2199,6 +2474,52 @@ def user_api_keys(user_id: int) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def source_providers() -> list[sqlite3.Row]:
+    return get_db().execute(
+        """
+        SELECT *
+        FROM source_providers
+        ORDER BY name COLLATE NOCASE ASC, id ASC
+        """
+    ).fetchall()
+
+
+def valid_provider_id(provider_id_text: str) -> int:
+    try:
+        provider_id = int(provider_id_text)
+    except (TypeError, ValueError):
+        return 1
+    row = get_db().execute(
+        "SELECT id FROM source_providers WHERE id = ?", (provider_id,)
+    ).fetchone()
+    return row["id"] if row else 1
+
+
+def provider_stats() -> list[sqlite3.Row]:
+    return get_db().execute(
+        """
+        SELECT
+            sp.id,
+            sp.name,
+            COUNT(p.id) AS proxy_count,
+            ROUND(
+                CASE
+                    WHEN SUM(COALESCE(p.success_count, 0) + COALESCE(p.failure_count, 0)) = 0 THEN 0
+                    ELSE SUM(COALESCE(p.success_count, 0)) * 100.0 /
+                         SUM(COALESCE(p.success_count, 0) + COALESCE(p.failure_count, 0))
+                END,
+                1
+            ) AS success_rate,
+            ROUND(AVG(p.latency_ms), 0) AS avg_latency,
+            ROUND(AVG(p.score), 1) AS avg_score
+        FROM source_providers sp
+        LEFT JOIN proxies p ON p.provider_id = sp.id
+        GROUP BY sp.id
+        ORDER BY proxy_count DESC, success_rate DESC, sp.name COLLATE NOCASE ASC
+        """
+    ).fetchall()
+
+
 def parse_proxy_line(line: str) -> tuple[str, str, str, str] | None:
     cleaned = line.strip()
     if not cleaned or cleaned.startswith("#"):
@@ -2239,14 +2560,24 @@ def normalize_proxy_type(value: str) -> str:
 
 
 def insert_proxy(ip: str, port: int, proxy_type: str, label: str) -> bool:
+    return insert_proxy_with_provider(ip, port, proxy_type, label, 1)
+
+
+def insert_proxy_with_provider(
+    ip: str,
+    port: int,
+    proxy_type: str,
+    label: str,
+    provider_id: int,
+) -> bool:
     now = current_time()
     try:
         get_db().execute(
             """
-            INSERT INTO proxies (ip, port, proxy_type, label, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO proxies (ip, port, proxy_type, provider_id, label, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (ip, port, normalize_proxy_type(proxy_type), label, now, now),
+            (ip, port, normalize_proxy_type(proxy_type), provider_id, label, now, now),
         )
         get_db().commit()
         return True
@@ -2264,9 +2595,10 @@ def index():
     selected_sort = request.args.get("sort", "").strip()
     selected_health = request.args.get("health", "").strip()
     selected_failure_reason = request.args.get("failure_reason", "").strip()
+    selected_provider_id = valid_provider_id(request.args.get("provider", "")) if request.args.get("provider") else 0
     if selected_state not in STATE_FILTERS:
         selected_state = ""
-    if selected_sort not in {"score", "latency", "success_rate"}:
+    if selected_sort not in {"score", "latency", "success_rate", "provider"}:
         selected_sort = ""
     if selected_health not in HEALTH_LEVELS:
         selected_health = ""
@@ -2279,6 +2611,7 @@ def index():
         selected_sort,
         selected_health,
         selected_failure_reason,
+        selected_provider_id or None,
     )
     proxy_check_map = fetch_proxy_check_history([proxy["id"] for proxy in proxies])
     return render_template_string(
@@ -2293,12 +2626,14 @@ def index():
         invalid_proxies=[proxy for proxy in all_proxies if proxy["status"] == "invalid"],
         query=query,
         proxy_types=PROXY_TYPES,
+        providers=source_providers(),
         proxy_check_map=proxy_check_map,
         proxies=proxies,
         recent_checks=fetch_recent_checks(),
         scheduler_config=scheduler_settings(),
         selected_failure_reason=selected_failure_reason,
         selected_health=selected_health,
+        selected_provider_id=selected_provider_id,
         selected_state=selected_state,
         selected_sort=selected_sort,
         state_filters=STATE_FILTERS,
@@ -2429,6 +2764,84 @@ def delete_api_key(key_id: int):
     return redirect(url_for("api_keys_page"))
 
 
+@app.route("/providers")
+def providers_page():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    return render_template_string(
+        PROVIDERS_TEMPLATE,
+        providers=source_providers(),
+        stats=provider_stats(),
+    )
+
+
+@app.route("/providers", methods=["POST"])
+def create_provider():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    name = request.form.get("name", "").strip()
+    description = request.form.get("description", "").strip()
+    if not name:
+        flash("来源名称不能为空。")
+        return redirect(url_for("providers_page"))
+    try:
+        get_db().execute(
+            """
+            INSERT INTO source_providers (name, description, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (name, description, current_time()),
+        )
+        get_db().commit()
+        flash("来源已新增。")
+    except sqlite3.IntegrityError:
+        flash("来源名称已存在。")
+    return redirect(url_for("providers_page"))
+
+
+@app.route("/providers/<int:provider_id>", methods=["POST"])
+def update_provider(provider_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    name = request.form.get("name", "").strip()
+    description = request.form.get("description", "").strip()
+    if not name:
+        flash("来源名称不能为空。")
+        return redirect(url_for("providers_page"))
+    try:
+        get_db().execute(
+            """
+            UPDATE source_providers
+            SET name = ?, description = ?
+            WHERE id = ?
+            """,
+            (name, description, provider_id),
+        )
+        get_db().commit()
+        flash("来源已保存。")
+    except sqlite3.IntegrityError:
+        flash("来源名称已存在。")
+    return redirect(url_for("providers_page"))
+
+
+@app.route("/providers/<int:provider_id>/delete", methods=["POST"])
+def delete_provider(provider_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    if provider_id == 1:
+        flash("默认来源不能删除。")
+        return redirect(url_for("providers_page"))
+    get_db().execute("UPDATE proxies SET provider_id = 1 WHERE provider_id = ?", (provider_id,))
+    get_db().execute("DELETE FROM source_providers WHERE id = ?", (provider_id,))
+    get_db().commit()
+    flash("来源已删除，该来源下代理已归入默认来源。")
+    return redirect(url_for("providers_page"))
+
+
 @app.route("/proxies", methods=["POST"])
 def create_proxy():
     auth_redirect = login_required()
@@ -2438,13 +2851,14 @@ def create_proxy():
     port_text = request.form.get("port", "").strip()
     label = request.form.get("label", "").strip()
     proxy_type = normalize_proxy_type(request.form.get("proxy_type", "HTTP"))
+    provider_id = valid_provider_id(request.form.get("provider_id", "1"))
     port, error = validate_proxy(ip, port_text)
 
     if error:
         flash(error)
         return redirect(url_for("index"))
 
-    if insert_proxy(ip, port, proxy_type, label):
+    if insert_proxy_with_provider(ip, port, proxy_type, label, provider_id):
         flash(f"\u5df2\u6dfb\u52a0\u4ee3\u7406 {ip}:{port}\u3002")
     else:
         flash(f"\u4ee3\u7406 {ip}:{port} \u5df2\u5b58\u5728\u3002")
@@ -2458,6 +2872,7 @@ def import_proxies():
     if auth_redirect:
         return auth_redirect
     text = request.form.get("proxies", "")
+    provider_id = valid_provider_id(request.form.get("provider_id", "1"))
     added = 0
     skipped = 0
     invalid = 0
@@ -2475,7 +2890,7 @@ def import_proxies():
             invalid += 1
             continue
 
-        if insert_proxy(ip, port, proxy_type, label):
+        if insert_proxy_with_provider(ip, port, proxy_type, label, provider_id):
             added += 1
         else:
             skipped += 1
@@ -2566,6 +2981,7 @@ def export_csv():
             "ip",
             "port",
             "proxy_type",
+            "provider",
             "label",
             "last_checked_at",
             "connectable",
@@ -2588,6 +3004,7 @@ def export_csv():
                 proxy["ip"],
                 proxy["port"],
                 proxy["proxy_type"],
+                proxy["provider_name"] or "",
                 proxy["label"],
                 proxy["last_checked_at"] or "",
                 "" if proxy["last_connectable"] is None else proxy["last_connectable"],
