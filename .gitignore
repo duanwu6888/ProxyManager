@@ -19,3 +19,4 @@ instance/
 *.db
 *.sqlite
 *.sqlite3
+proxy_check_results.csv

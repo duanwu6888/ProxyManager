@@ -16,7 +16,7 @@ app.secret_key = "proxy-manager-dev-secret"
 
 CSV_FILE = Path("proxy_check_results.csv")
 CONNECT_TIMEOUT_SECONDS = 5
-UNKNOWN = "未知"
+UNKNOWN = "Unknown"
 
 PAGE_TEMPLATE = """
 <!doctype html>
@@ -25,384 +25,265 @@ PAGE_TEMPLATE = """
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ProxyManager</title>
+    <link
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+        rel="stylesheet"
+    >
     <style>
-        :root {
-            color-scheme: light;
-            font-family: Arial, "Microsoft YaHei", sans-serif;
-            background: #eef2f7;
-            color: #172033;
-        }
-
-        * {
-            box-sizing: border-box;
-        }
-
         body {
-            margin: 0;
-            min-height: 100vh;
-            background: #eef2f7;
+            background: #f4f6f9;
         }
 
-        header {
-            background: #ffffff;
-            border-bottom: 1px solid #d8e0eb;
+        .navbar {
+            border-bottom: 1px solid #dde3ec;
         }
 
-        .wrap {
-            width: min(1180px, calc(100% - 32px));
-            margin: 0 auto;
+        .stat-card {
+            min-height: 112px;
         }
 
-        .topbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 16px;
-            padding: 18px 0;
-        }
-
-        h1 {
-            margin: 0;
-            font-size: 24px;
-            line-height: 1.2;
-        }
-
-        .muted {
-            color: #66758d;
-            font-size: 14px;
-        }
-
-        main {
-            padding: 24px 0 40px;
-        }
-
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 12px;
-            margin-bottom: 16px;
-        }
-
-        .stat,
-        .panel,
-        .table-shell {
-            background: #ffffff;
-            border: 1px solid #d8e0eb;
-            border-radius: 8px;
-        }
-
-        .stat {
-            padding: 16px;
-        }
-
-        .stat span {
-            display: block;
-            color: #66758d;
-            font-size: 13px;
-            margin-bottom: 8px;
-        }
-
-        .stat strong {
-            font-size: 28px;
-        }
-
-        .layout {
-            display: grid;
-            grid-template-columns: 340px 1fr;
-            gap: 16px;
-            align-items: start;
-        }
-
-        .panel {
-            padding: 18px;
-        }
-
-        h2 {
-            margin: 0 0 14px;
-            font-size: 18px;
-        }
-
-        form.stack {
-            display: grid;
-            gap: 12px;
-        }
-
-        label {
-            display: grid;
-            gap: 7px;
-            color: #39465c;
-            font-size: 14px;
-            font-weight: 700;
-        }
-
-        input {
-            width: 100%;
-            height: 40px;
-            border: 1px solid #b9c6d8;
-            border-radius: 6px;
-            padding: 0 11px;
-            font-size: 15px;
-            background: #ffffff;
-            color: #172033;
-        }
-
-        .actions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            align-items: center;
-        }
-
-        button,
-        .button {
-            min-height: 38px;
-            border: 1px solid #1769aa;
-            border-radius: 6px;
-            padding: 0 13px;
-            background: #1769aa;
-            color: #ffffff;
-            font-size: 14px;
-            font-weight: 700;
-            cursor: pointer;
-            text-decoration: none;
-        }
-
-        button:hover,
-        .button:hover {
-            background: #12578e;
-            border-color: #12578e;
-        }
-
-        .button.secondary,
-        button.secondary {
-            background: #ffffff;
-            color: #1769aa;
-        }
-
-        .button.danger,
-        button.danger {
-            border-color: #c2413a;
-            background: #ffffff;
-            color: #b02e28;
-        }
-
-        .flash {
-            margin: 0 0 16px;
-            padding: 12px 14px;
-            border: 1px solid #b9d7bd;
-            border-radius: 8px;
-            background: #f1fbf3;
-            color: #256b32;
-        }
-
-        .table-shell {
-            overflow-x: auto;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            min-width: 780px;
-        }
-
-        th,
-        td {
-            padding: 12px 14px;
-            border-bottom: 1px solid #e2e8f0;
-            text-align: left;
+        .table td,
+        .table th {
             vertical-align: middle;
-            font-size: 14px;
         }
 
-        th {
-            background: #f8fafc;
-            color: #516078;
-            font-size: 12px;
-            text-transform: uppercase;
-        }
-
-        tr:last-child td {
-            border-bottom: 0;
-        }
-
-        .status {
-            display: inline-flex;
-            align-items: center;
-            min-height: 26px;
-            border-radius: 999px;
-            padding: 0 10px;
-            font-size: 13px;
-            font-weight: 700;
-        }
-
-        .ok {
-            background: #e7f7ed;
-            color: #1f7a3d;
-        }
-
-        .bad {
-            background: #fff0ef;
-            color: #b02e28;
-        }
-
-        .unknown {
-            background: #eef2f7;
-            color: #66758d;
-        }
-
-        .empty {
-            padding: 24px;
-            color: #66758d;
-        }
-
-        .recent {
-            margin-top: 16px;
-        }
-
-        @media (max-width: 900px) {
-            .stats,
-            .layout {
-                grid-template-columns: 1fr;
-            }
-
-            .topbar {
-                align-items: flex-start;
-                flex-direction: column;
-            }
+        .proxy-address {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         }
     </style>
 </head>
 <body>
-    <header>
-        <div class="wrap topbar">
-            <div>
-                <h1>ProxyManager</h1>
-                <div class="muted">代理资产检测与结果管理后台</div>
-            </div>
-            <form action="{{ url_for('check_all') }}" method="post">
-                <button type="submit">批量检测</button>
+    <nav class="navbar navbar-expand-lg bg-white">
+        <div class="container-fluid px-4">
+            <span class="navbar-brand fw-bold">ProxyManager</span>
+            <form action="{{ url_for('check_all') }}" method="post" class="ms-auto">
+                <button type="submit" class="btn btn-primary">
+                    &#25209;&#37327;&#26816;&#27979;
+                </button>
             </form>
         </div>
-    </header>
+    </nav>
 
-    <main class="wrap">
+    <main class="container-fluid px-4 py-4">
+        <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
+            <div>
+                <h1 class="h3 mb-1">&#20195;&#29702; IP &#26816;&#27979;&#21518;&#21488;</h1>
+                <div class="text-secondary">
+                    Flask + SQLite &#20195;&#29702;&#36164;&#20135;&#31649;&#29702;&#19982;&#36830;&#36890;&#24615;&#26816;&#27979;
+                </div>
+            </div>
+            <a href="{{ url_for('health') }}" class="btn btn-outline-secondary align-self-start">
+                Health
+            </a>
+        </div>
+
         {% with messages = get_flashed_messages() %}
             {% if messages %}
                 {% for message in messages %}
-                    <div class="flash">{{ message }}</div>
+                    <div class="alert alert-info alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
                 {% endfor %}
             {% endif %}
         {% endwith %}
 
-        <section class="stats">
-            <div class="stat"><span>代理总数</span><strong>{{ stats.total }}</strong></div>
-            <div class="stat"><span>可连接</span><strong>{{ stats.online }}</strong></div>
-            <div class="stat"><span>不可连接</span><strong>{{ stats.offline }}</strong></div>
-            <div class="stat"><span>未检测</span><strong>{{ stats.untested }}</strong></div>
+        <section class="row g-3 mb-4">
+            <div class="col-6 col-xl-3">
+                <div class="card stat-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">&#20195;&#29702;&#24635;&#25968;</div>
+                        <div class="display-6 fw-semibold">{{ stats.total }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-xl-3">
+                <div class="card stat-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">&#21487;&#36830;&#25509;</div>
+                        <div class="display-6 fw-semibold text-success">{{ stats.online }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-xl-3">
+                <div class="card stat-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">&#19981;&#21487;&#36830;&#25509;</div>
+                        <div class="display-6 fw-semibold text-danger">{{ stats.offline }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-xl-3">
+                <div class="card stat-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">&#26410;&#26816;&#27979;</div>
+                        <div class="display-6 fw-semibold text-secondary">{{ stats.untested }}</div>
+                    </div>
+                </div>
+            </div>
         </section>
 
-        <section class="layout">
-            <aside class="panel">
-                <h2>添加代理</h2>
-                <form class="stack" action="{{ url_for('create_proxy') }}" method="post">
-                    <label>
-                        IP 地址
-                        <input name="ip" placeholder="例如 8.8.8.8" required>
-                    </label>
-                    <label>
-                        端口
-                        <input name="port" placeholder="例如 53" inputmode="numeric" required>
-                    </label>
-                    <label>
-                        备注
-                        <input name="label" placeholder="例如 美国 DNS">
-                    </label>
-                    <button type="submit">保存代理</button>
-                </form>
-            </aside>
+        <section class="row g-4">
+            <div class="col-12 col-xl-3">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">&#36755;&#20837; IP &#21644;&#31471;&#21475;</div>
+                    <div class="card-body">
+                        <form action="{{ url_for('create_proxy') }}" method="post" class="vstack gap-3">
+                            <div>
+                                <label for="ip" class="form-label">IP</label>
+                                <input
+                                    id="ip"
+                                    name="ip"
+                                    class="form-control"
+                                    placeholder="8.8.8.8"
+                                    required
+                                >
+                            </div>
+                            <div>
+                                <label for="port" class="form-label">&#31471;&#21475;</label>
+                                <input
+                                    id="port"
+                                    name="port"
+                                    class="form-control"
+                                    placeholder="53"
+                                    inputmode="numeric"
+                                    required
+                                >
+                            </div>
+                            <div>
+                                <label for="label" class="form-label">&#22791;&#27880;</label>
+                                <input
+                                    id="label"
+                                    name="label"
+                                    class="form-control"
+                                    placeholder="DNS / HTTP Proxy"
+                                >
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100">
+                                &#28155;&#21152;&#20195;&#29702;
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
 
-            <section>
-                <div class="table-shell">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>代理</th>
-                                <th>备注</th>
-                                <th>最近状态</th>
-                                <th>位置</th>
-                                <th>最近检测</th>
-                                <th>操作</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for proxy in proxies %}
+            <div class="col-12 col-xl-9">
+                <div class="card border-0 shadow-sm mb-4">
+                    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                        <span class="fw-semibold">&#20195;&#29702;&#21015;&#34920;</span>
+                        <span class="badge text-bg-light">{{ proxies|length }} items</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
                                 <tr>
-                                    <td><strong>{{ proxy.ip }}:{{ proxy.port }}</strong></td>
-                                    <td>{{ proxy.label or "-" }}</td>
-                                    <td>
-                                        {% if proxy.last_connectable is none %}
-                                            <span class="status unknown">未检测</span>
-                                        {% elif proxy.last_connectable %}
-                                            <span class="status ok">可连接</span>
-                                        {% else %}
-                                            <span class="status bad">不可连接</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>{{ proxy.country or UNKNOWN }} / {{ proxy.state or UNKNOWN }} / {{ proxy.city or UNKNOWN }}</td>
-                                    <td>{{ proxy.last_checked_at or "-" }}</td>
-                                    <td>
-                                        <div class="actions">
-                                            <form action="{{ url_for('check_proxy_route', proxy_id=proxy.id) }}" method="post">
-                                                <button class="secondary" type="submit">检测</button>
-                                            </form>
-                                            <form action="{{ url_for('delete_proxy', proxy_id=proxy.id) }}" method="post" onsubmit="return confirm('确定删除这个代理及其检测记录？');">
-                                                <button class="danger" type="submit">删除</button>
-                                            </form>
-                                        </div>
-                                    </td>
+                                    <th>&#20195;&#29702;</th>
+                                    <th>&#22791;&#27880;</th>
+                                    <th>&#26816;&#27979;&#29366;&#24577;</th>
+                                    <th>&#22269;&#23478;</th>
+                                    <th>&#24030;</th>
+                                    <th>&#22478;&#24066;</th>
+                                    <th>&#26368;&#36817;&#26816;&#27979;</th>
+                                    <th class="text-end">&#25805;&#20316;</th>
                                 </tr>
-                            {% else %}
-                                <tr><td class="empty" colspan="6">暂无代理，先添加一个 IP 和端口。</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                                {% for proxy in proxies %}
+                                    <tr>
+                                        <td class="proxy-address fw-semibold">{{ proxy.ip }}:{{ proxy.port }}</td>
+                                        <td>{{ proxy.label or "-" }}</td>
+                                        <td>
+                                            {% if proxy.last_connectable is none %}
+                                                <span class="badge rounded-pill text-bg-secondary">&#26410;&#26816;&#27979;</span>
+                                            {% elif proxy.last_connectable %}
+                                                <span class="badge rounded-pill text-bg-success">&#21487;&#36830;&#25509;</span>
+                                            {% else %}
+                                                <span class="badge rounded-pill text-bg-danger">&#19981;&#21487;&#36830;&#25509;</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ proxy.country or UNKNOWN }}</td>
+                                        <td>{{ proxy.state or UNKNOWN }}</td>
+                                        <td>{{ proxy.city or UNKNOWN }}</td>
+                                        <td>{{ proxy.last_checked_at or "-" }}</td>
+                                        <td>
+                                            <div class="d-flex justify-content-end gap-2">
+                                                <form action="{{ url_for('check_proxy_route', proxy_id=proxy.id) }}" method="post">
+                                                    <button type="submit" class="btn btn-sm btn-outline-primary">
+                                                        &#26816;&#27979;
+                                                    </button>
+                                                </form>
+                                                <form
+                                                    action="{{ url_for('delete_proxy', proxy_id=proxy.id) }}"
+                                                    method="post"
+                                                    onsubmit="return confirm('Delete this proxy and its history?');"
+                                                >
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger">
+                                                        &#21024;&#38500;
+                                                    </button>
+                                                </form>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                {% else %}
+                                    <tr>
+                                        <td colspan="8" class="text-center text-secondary py-5">
+                                            &#26242;&#26080;&#20195;&#29702;&#65292;&#35831;&#20808;&#28155;&#21152; IP &#21644;&#31471;&#21475;&#12290;
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
 
-                <div class="table-shell recent">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>检测时间</th>
-                                <th>代理</th>
-                                <th>状态</th>
-                                <th>消息</th>
-                                <th>位置</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for check in recent_checks %}
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">&#21382;&#21490;&#35760;&#24405;</div>
+                    <div class="table-responsive">
+                        <table class="table table-striped mb-0">
+                            <thead class="table-light">
                                 <tr>
-                                    <td>{{ check.checked_at }}</td>
-                                    <td>{{ check.ip }}:{{ check.port }}</td>
-                                    <td>
-                                        {% if check.connectable %}
-                                            <span class="status ok">可连接</span>
-                                        {% else %}
-                                            <span class="status bad">不可连接</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>{{ check.message }}</td>
-                                    <td>{{ check.country }} / {{ check.state }} / {{ check.city }}</td>
+                                    <th>&#26816;&#27979;&#26102;&#38388;</th>
+                                    <th>&#20195;&#29702;</th>
+                                    <th>&#29366;&#24577;</th>
+                                    <th>&#22269;&#23478;</th>
+                                    <th>&#24030;</th>
+                                    <th>&#22478;&#24066;</th>
+                                    <th>&#28040;&#24687;</th>
                                 </tr>
-                            {% else %}
-                                <tr><td class="empty" colspan="5">还没有检测记录。</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                                {% for check in recent_checks %}
+                                    <tr>
+                                        <td>{{ check.checked_at }}</td>
+                                        <td class="proxy-address">{{ check.ip }}:{{ check.port }}</td>
+                                        <td>
+                                            {% if check.connectable %}
+                                                <span class="badge text-bg-success">&#21487;&#36830;&#25509;</span>
+                                            {% else %}
+                                                <span class="badge text-bg-danger">&#19981;&#21487;&#36830;&#25509;</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ check.country }}</td>
+                                        <td>{{ check.state }}</td>
+                                        <td>{{ check.city }}</td>
+                                        <td class="text-break">{{ check.message }}</td>
+                                    </tr>
+                                {% else %}
+                                    <tr>
+                                        <td colspan="7" class="text-center text-secondary py-5">
+                                            &#36824;&#27809;&#26377;&#26816;&#27979;&#35760;&#24405;&#12290;
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
-            </section>
+            </div>
         </section>
     </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 """
@@ -460,51 +341,60 @@ def import_csv_if_empty(db: sqlite3.Connection) -> None:
     if proxy_count or not CSV_FILE.exists():
         return
 
-    with CSV_FILE.open("r", encoding="utf-8-sig", newline="") as csv_file:
-        for row in csv.DictReader(csv_file):
-            ip = (row.get("ip") or "").strip()
-            port_text = (row.get("port") or "").strip()
-            try:
-                port, error = validate_proxy(ip, port_text)
-            except ValueError:
-                continue
-            if error:
-                continue
+    for row in read_legacy_csv_rows():
+        ip = (row.get("ip") or "").strip()
+        port_text = (row.get("port") or "").strip()
+        port, error = validate_proxy(ip, port_text)
+        if error or port is None:
+            continue
 
-            now = current_time()
-            db.execute(
-                """
-                INSERT OR IGNORE INTO proxies (ip, port, label, created_at, updated_at)
-                VALUES (?, ?, '', ?, ?)
-                """,
-                (ip, port, now, now),
-            )
-            proxy_id = db.execute(
-                "SELECT id FROM proxies WHERE ip = ? AND port = ?", (ip, port)
-            ).fetchone()["id"]
+        now = current_time()
+        db.execute(
+            """
+            INSERT OR IGNORE INTO proxies (ip, port, label, created_at, updated_at)
+            VALUES (?, ?, '', ?, ?)
+            """,
+            (ip, port, now, now),
+        )
+        proxy_id = db.execute(
+            "SELECT id FROM proxies WHERE ip = ? AND port = ?", (ip, port)
+        ).fetchone()["id"]
 
-            connectable = normalize_connectable(row.get("connectable", ""))
-            db.execute(
-                """
-                INSERT INTO checks
-                    (proxy_id, checked_at, connectable, message, country, state, city)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    proxy_id,
-                    row.get("checked_at") or now,
-                    connectable,
-                    row.get("message") or "",
-                    row.get("country") or UNKNOWN,
-                    row.get("state") or UNKNOWN,
-                    row.get("city") or UNKNOWN,
-                ),
-            )
+        db.execute(
+            """
+            INSERT INTO checks
+                (proxy_id, checked_at, connectable, message, country, state, city)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                proxy_id,
+                row.get("checked_at") or now,
+                normalize_connectable(row.get("connectable", "")),
+                row.get("message") or "",
+                row.get("country") or UNKNOWN,
+                row.get("state") or UNKNOWN,
+                row.get("city") or UNKNOWN,
+            ),
+        )
     db.commit()
 
 
+def read_legacy_csv_rows() -> list[dict[str, str]]:
+    raw = CSV_FILE.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8", "gbk"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        text = raw.decode("utf-8", errors="replace")
+
+    return list(csv.DictReader(text.splitlines()))
+
+
 def normalize_connectable(value: str) -> int:
-    return 1 if value.strip().lower() in {"yes", "true", "1", "是", "可连接"} else 0
+    return 1 if value.strip().lower() in {"yes", "true", "1", "\u662f", "\u53ef\u8fde\u63a5"} else 0
 
 
 def current_time() -> str:
@@ -513,19 +403,19 @@ def current_time() -> str:
 
 def validate_proxy(ip: str, port_text: str) -> tuple[int | None, str | None]:
     if not ip:
-        return None, "请输入 IP 地址。"
+        return None, "\u8bf7\u8f93\u5165 IP \u5730\u5740\u3002"
 
     try:
         ipaddress.ip_address(ip)
     except ValueError:
-        return None, "IP 地址格式不正确。"
+        return None, "IP \u5730\u5740\u683c\u5f0f\u4e0d\u6b63\u786e\u3002"
 
     if not port_text.isdigit():
-        return None, "端口必须是数字。"
+        return None, "\u7aef\u53e3\u5fc5\u987b\u662f\u6570\u5b57\u3002"
 
     port = int(port_text)
     if not 1 <= port <= 65535:
-        return None, "端口范围必须是 1-65535。"
+        return None, "\u7aef\u53e3\u8303\u56f4\u5fc5\u987b\u662f 1-65535\u3002"
 
     return port, None
 
@@ -533,7 +423,7 @@ def validate_proxy(ip: str, port_text: str) -> tuple[int | None, str | None]:
 def check_connection(ip: str, port: int) -> tuple[bool, str]:
     try:
         with socket.create_connection((ip, port), timeout=CONNECT_TIMEOUT_SECONDS):
-            return True, "连接成功"
+            return True, "\u8fde\u63a5\u6210\u529f"
     except OSError as exc:
         return False, str(exc)
 
@@ -553,7 +443,7 @@ def get_location(ip: str) -> dict[str, str]:
     row = next(csv.reader([body]))
     status = row[0] if row else "fail"
     if status != "success":
-        message = row[4] if len(row) > 4 else "位置查询失败"
+        message = row[4] if len(row) > 4 else "\u4f4d\u7f6e\u67e5\u8be2\u5931\u8d25"
         return {"country": UNKNOWN, "state": UNKNOWN, "city": UNKNOWN, "error": message}
 
     return {
@@ -573,8 +463,9 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
     connectable, message = check_connection(proxy["ip"], proxy["port"])
     location = get_location(proxy["ip"])
     if location["error"]:
-        message = f"{message}; 位置查询: {location['error']}"
+        message = f"{message}; location: {location['error']}"
 
+    checked_at = current_time()
     db.execute(
         """
         INSERT INTO checks
@@ -583,7 +474,7 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
         """,
         (
             proxy["id"],
-            current_time(),
+            checked_at,
             1 if connectable else 0,
             message,
             location["country"],
@@ -591,7 +482,7 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
             location["city"],
         ),
     )
-    db.execute("UPDATE proxies SET updated_at = ? WHERE id = ?", (current_time(), proxy["id"]))
+    db.execute("UPDATE proxies SET updated_at = ? WHERE id = ?", (checked_at, proxy["id"]))
     db.commit()
     return proxy
 
@@ -618,7 +509,7 @@ def fetch_proxies() -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def fetch_recent_checks(limit: int = 10) -> list[sqlite3.Row]:
+def fetch_recent_checks(limit: int = 20) -> list[sqlite3.Row]:
     return get_db().execute(
         """
         SELECT c.*, p.ip, p.port
@@ -631,8 +522,7 @@ def fetch_recent_checks(limit: int = 10) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def fetch_stats() -> dict[str, int]:
-    proxies = fetch_proxies()
+def build_stats(proxies: list[sqlite3.Row]) -> dict[str, int]:
     return {
         "total": len(proxies),
         "online": sum(1 for proxy in proxies if proxy["last_connectable"] == 1),
@@ -649,12 +539,7 @@ def index():
         UNKNOWN=UNKNOWN,
         proxies=proxies,
         recent_checks=fetch_recent_checks(),
-        stats={
-            "total": len(proxies),
-            "online": sum(1 for proxy in proxies if proxy["last_connectable"] == 1),
-            "offline": sum(1 for proxy in proxies if proxy["last_connectable"] == 0),
-            "untested": sum(1 for proxy in proxies if proxy["last_connectable"] is None),
-        },
+        stats=build_stats(proxies),
     )
 
 
@@ -679,9 +564,9 @@ def create_proxy():
             (ip, port, label, now, now),
         )
         get_db().commit()
-        flash(f"已添加代理 {ip}:{port}。")
+        flash(f"\u5df2\u6dfb\u52a0\u4ee3\u7406 {ip}:{port}\u3002")
     except sqlite3.IntegrityError:
-        flash(f"代理 {ip}:{port} 已存在。")
+        flash(f"\u4ee3\u7406 {ip}:{port} \u5df2\u5b58\u5728\u3002")
 
     return redirect(url_for("index"))
 
@@ -690,9 +575,9 @@ def create_proxy():
 def check_proxy_route(proxy_id: int):
     proxy = run_check(proxy_id)
     if proxy is None:
-        flash("代理不存在。")
+        flash("\u4ee3\u7406\u4e0d\u5b58\u5728\u3002")
     else:
-        flash(f"已检测 {proxy['ip']}:{proxy['port']}。")
+        flash(f"\u5df2\u68c0\u6d4b {proxy['ip']}:{proxy['port']}\u3002")
     return redirect(url_for("index"))
 
 
@@ -701,7 +586,7 @@ def check_all():
     proxies = get_db().execute("SELECT id FROM proxies ORDER BY id").fetchall()
     for proxy in proxies:
         run_check(proxy["id"])
-    flash(f"批量检测完成，共检测 {len(proxies)} 个代理。")
+    flash(f"\u6279\u91cf\u68c0\u6d4b\u5b8c\u6210\uff0c\u5171\u68c0\u6d4b {len(proxies)} \u4e2a\u4ee3\u7406\u3002")
     return redirect(url_for("index"))
 
 
@@ -709,7 +594,7 @@ def check_all():
 def delete_proxy(proxy_id: int):
     get_db().execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
     get_db().commit()
-    flash("代理已删除。")
+    flash("\u4ee3\u7406\u5df2\u5220\u9664\u3002")
     return redirect(url_for("index"))
 
 
