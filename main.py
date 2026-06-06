@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 import random
 import secrets
+import ssl
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,20 @@ IP_API_JSON_URL = "http://ip-api.com/json/{ip}?fields=status,country,regionName,
 UNKNOWN = "Unknown"
 PROXY_TYPES = ("HTTP", "HTTPS", "SOCKS5", "SOCKS4")
 STATE_FILTERS = ("California", "New York", "Texas", "Florida")
+HEALTH_LEVELS = ("健康", "一般", "危险", "失效")
+FAILURE_REASONS = (
+    "DNS失败",
+    "连接超时",
+    "连接被拒绝",
+    "连接重置",
+    "TLS失败",
+    "HTTP失败",
+    "出口IP获取失败",
+    "地理位置查询失败",
+)
+FAILURE_REASON_SUMMARY = ("连接超时", "连接重置", "TLS失败", "出口IP获取失败")
+UNCATEGORIZED_REASON = "未分类"
+INVALID_FAILURE_THRESHOLD = 5
 SCHEDULER_JOB_ID = "proxy_auto_check"
 DEFAULT_SCHEDULE_SECONDS = 300
 scheduler = BackgroundScheduler(daemon=True)
@@ -61,12 +76,104 @@ PAGE_TEMPLATE = """
             vertical-align: middle;
         }
 
-        .proxy-address {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        .proxy-table {
+            table-layout: fixed;
+            min-width: 1500px;
+            font-size: 0.82rem;
         }
 
-        .failure-reason {
-            max-width: 280px;
+        .history-table {
+            table-layout: fixed;
+            min-width: 1040px;
+            font-size: 0.78rem;
+        }
+
+        .proxy-table th,
+        .proxy-table td,
+        .history-table th,
+        .history-table td {
+            padding: 0.45rem 0.5rem;
+            line-height: 1.25;
+        }
+
+        .history-table .badge {
+            font-size: 0.68rem;
+            padding: 0.28em 0.55em;
+        }
+
+        .proxy-address {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.78rem;
+            white-space: nowrap;
+        }
+
+        .cell-compact {
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .cell-tiny {
+            width: 66px;
+        }
+
+        .cell-small {
+            width: 92px;
+        }
+
+        .cell-medium {
+            width: 128px;
+        }
+
+        .cell-large {
+            width: 180px;
+        }
+
+        .cell-message {
+            width: 220px;
+        }
+
+        .cell-failures {
+            width: 78px;
+        }
+
+        .cell-health {
+            width: 76px;
+        }
+
+        .cell-reason {
+            width: 126px;
+        }
+
+        .diagnostic-row {
+            background: #fbfcfe;
+        }
+
+        .diagnostic-table {
+            font-size: 0.76rem;
+        }
+
+        .history-time {
+            width: 132px;
+        }
+
+        .history-status {
+            width: 84px;
+        }
+
+        .history-message {
+            width: 420px;
+        }
+
+        .chart-body {
+            height: 260px;
+            padding: 1rem 1.25rem;
+        }
+
+        .chart-body canvas {
+            width: 100% !important;
+            height: 100% !important;
         }
 
         .dashboard-card {
@@ -101,8 +208,19 @@ PAGE_TEMPLATE = """
                 font-size: 1.8rem;
             }
 
-            .table {
-                min-width: 1120px;
+            .proxy-table {
+                min-width: 1380px;
+                font-size: 0.78rem;
+            }
+
+            .history-table {
+                min-width: 920px;
+                font-size: 0.74rem;
+            }
+
+            .chart-body {
+                height: 220px;
+                padding: 0.75rem;
             }
         }
     </style>
@@ -195,10 +313,10 @@ PAGE_TEMPLATE = """
         <section class="row g-3 mb-4">
             <div class="col-12 col-xl-4">
                 <div class="card dashboard-card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">Auto Check</div>
+                    <div class="card-header bg-white fw-semibold">自动检测</div>
                     <div class="card-body">
                         <form action="{{ url_for('update_scheduler') }}" method="post" class="vstack gap-2">
-                            <label for="schedule_interval" class="form-label">Interval</label>
+                        <label for="schedule_interval" class="form-label">检测间隔</label>
                             <select id="schedule_interval" name="interval_seconds" class="form-select">
                                 <option value="300" {% if scheduler_config.interval_seconds == 300 %}selected{% endif %}>5 minutes</option>
                                 <option value="1800" {% if scheduler_config.interval_seconds == 1800 %}selected{% endif %}>30 minutes</option>
@@ -216,21 +334,21 @@ PAGE_TEMPLATE = """
                                 <input id="schedule_enabled" name="enabled" value="1" type="checkbox" class="form-check-input" {% if scheduler_config.enabled %}checked{% endif %}>
                                 <label for="schedule_enabled" class="form-check-label">Enable background scheduler</label>
                             </div>
-                            <button type="submit" class="btn btn-primary mobile-full">Save Scheduler</button>
+                            <button type="submit" class="btn btn-primary mobile-full">保存调度</button>
                         </form>
                         <div class="form-text mt-2">
-                            Current: {% if scheduler_config.enabled %}enabled{% else %}disabled{% endif %},
-                            every {{ scheduler_config.interval_seconds }} seconds.
+                            当前：{% if scheduler_config.enabled %}已启用{% else %}未启用{% endif %}，
+                            每 {{ scheduler_config.interval_seconds }} 秒执行一次。
                         </div>
                     </div>
                 </div>
             </div>
             <div class="col-12 col-xl-4">
                 <div class="card dashboard-card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">Online Rate</div>
+                    <div class="card-header bg-white fw-semibold">在线率</div>
                     <div class="card-body">
                         <div class="display-6 fw-semibold text-primary">{{ dashboard.online_rate }}%</div>
-                        <div class="text-secondary small">{{ stats.online }} / {{ stats.total }} online</div>
+                        <div class="text-secondary small">{{ stats.online }} / {{ stats.total }} 个在线</div>
                     </div>
                 </div>
             </div>
@@ -239,7 +357,7 @@ PAGE_TEMPLATE = """
                     <div class="card-header bg-white fw-semibold">Latest Check</div>
                     <div class="card-body">
                         <div class="h5 mb-1">{{ dashboard.last_checked_at or "-" }}</div>
-                        <div class="text-secondary small">Most recent check record</div>
+                        <div class="text-secondary small">最近一条检测记录</div>
                     </div>
                 </div>
             </div>
@@ -249,7 +367,7 @@ PAGE_TEMPLATE = """
             <div class="col-6 col-xl">
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-body">
-                        <div class="text-secondary small">Average Latency</div>
+                        <div class="text-secondary small">平均延迟</div>
                         <div class="h3 mb-0">{{ dashboard.avg_latency_ms }} ms</div>
                     </div>
                 </div>
@@ -257,7 +375,7 @@ PAGE_TEMPLATE = """
             <div class="col-6 col-xl">
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-body">
-                        <div class="text-secondary small">Fastest Proxy</div>
+                        <div class="text-secondary small">最快代理</div>
                         <div class="fw-semibold proxy-address">{{ dashboard.fastest_proxy or "-" }}</div>
                     </div>
                 </div>
@@ -265,7 +383,7 @@ PAGE_TEMPLATE = """
             <div class="col-6 col-xl">
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-body">
-                        <div class="text-secondary small">Slowest Proxy</div>
+                        <div class="text-secondary small">最慢代理</div>
                         <div class="fw-semibold proxy-address">{{ dashboard.slowest_proxy or "-" }}</div>
                     </div>
                 </div>
@@ -273,7 +391,7 @@ PAGE_TEMPLATE = """
             <div class="col-6 col-xl">
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-body">
-                        <div class="text-secondary small">Average Success Rate</div>
+                        <div class="text-secondary small">平均成功率</div>
                         <div class="h3 mb-0">{{ dashboard.avg_success_rate }}%</div>
                     </div>
                 </div>
@@ -281,42 +399,55 @@ PAGE_TEMPLATE = """
             <div class="col-12 col-xl">
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-body">
-                        <div class="text-secondary small">Top ISP</div>
+                        <div class="text-secondary small">主要 ISP</div>
                         <div class="fw-semibold text-break">{{ dashboard.top_isp or "-" }}</div>
                     </div>
                 </div>
             </div>
         </section>
 
+        <section class="row g-3 mb-4">
+            {% for reason in failure_summary_reasons %}
+                <div class="col-6 col-xl-3">
+                    <div class="card dashboard-card border-0 shadow-sm">
+                        <div class="card-body">
+                            <div class="text-secondary small">{{ reason }}</div>
+                            <div class="h3 mb-0 text-danger">{{ dashboard.failure_reason_counts.get(reason, 0) }}</div>
+                        </div>
+                    </div>
+                </div>
+            {% endfor %}
+        </section>
+
         <section class="row g-4 mb-4">
             <div class="col-12 col-xl-6">
                 <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">Online Rate Trend</div>
-                    <div class="card-body"><canvas id="onlineRateChart"></canvas></div>
+                    <div class="card-header bg-white fw-semibold">在线率趋势</div>
+                    <div class="card-body chart-body"><canvas id="onlineRateChart"></canvas></div>
                 </div>
             </div>
             <div class="col-12 col-xl-6">
                 <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">Proxy Growth</div>
-                    <div class="card-body"><canvas id="proxyGrowthChart"></canvas></div>
+                    <div class="card-header bg-white fw-semibold">代理增长</div>
+                    <div class="card-body chart-body"><canvas id="proxyGrowthChart"></canvas></div>
                 </div>
             </div>
             <div class="col-12 col-xl-6">
                 <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">Failure Rate</div>
-                    <div class="card-body"><canvas id="failureRateChart"></canvas></div>
+                    <div class="card-header bg-white fw-semibold">失败率</div>
+                    <div class="card-body chart-body"><canvas id="failureRateChart"></canvas></div>
                 </div>
             </div>
             <div class="col-12 col-xl-6">
                 <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">Country Stats</div>
-                    <div class="card-body"><canvas id="countryChart"></canvas></div>
+                    <div class="card-header bg-white fw-semibold">国家统计</div>
+                    <div class="card-body chart-body"><canvas id="countryChart"></canvas></div>
                 </div>
             </div>
         </section>
 
         <section class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white fw-semibold">Proxy Count By State</div>
+            <div class="card-header bg-white fw-semibold">各州代理数量</div>
             <div class="card-body">
                 <div class="row g-3">
                     {% for item in dashboard.state_counts %}
@@ -368,7 +499,7 @@ PAGE_TEMPLATE = """
                                 >
                             </div>
                             <div>
-                                <label for="proxy_type" class="form-label">Proxy Type</label>
+                                <label for="proxy_type" class="form-label">代理类型</label>
                                 <select id="proxy_type" name="proxy_type" class="form-select">
                                     {% for proxy_type in proxy_types %}
                                         <option value="{{ proxy_type }}">{{ proxy_type }}</option>
@@ -394,13 +525,13 @@ PAGE_TEMPLATE = """
                                     name="q"
                                     class="form-control"
                                     value="{{ query }}"
-                                    placeholder="IP / port / label / country / state / city"
+                                    placeholder="IP / 端口 / 备注 / 国家 / 州 / 城市"
                                 >
                             </div>
                             <div class="col-12 col-md-3">
-                                <label for="state" class="form-label">State</label>
+                                <label for="state" class="form-label">州筛选</label>
                                 <select id="state" name="state" class="form-select">
-                                    <option value="">All states</option>
+                                    <option value="">全部州</option>
                                     {% for state in state_filters %}
                                         <option value="{{ state }}" {% if selected_state == state %}selected{% endif %}>
                                             {{ state }}
@@ -409,12 +540,30 @@ PAGE_TEMPLATE = """
                                 </select>
                             </div>
                             <div class="col-12 col-md-3">
-                                <label for="sort" class="form-label">Sort</label>
+                                <label for="sort" class="form-label">排序</label>
                                 <select id="sort" name="sort" class="form-select">
-                                    <option value="">Default</option>
-                                    <option value="score" {% if selected_sort == 'score' %}selected{% endif %}>Score</option>
-                                    <option value="latency" {% if selected_sort == 'latency' %}selected{% endif %}>Latency</option>
-                                    <option value="success_rate" {% if selected_sort == 'success_rate' %}selected{% endif %}>Success Rate</option>
+                                    <option value="">默认</option>
+                                    <option value="score" {% if selected_sort == 'score' %}selected{% endif %}>按评分</option>
+                                    <option value="latency" {% if selected_sort == 'latency' %}selected{% endif %}>按延迟</option>
+                                    <option value="success_rate" {% if selected_sort == 'success_rate' %}selected{% endif %}>按成功率</option>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-3">
+                                <label for="health" class="form-label">健康等级</label>
+                                <select id="health" name="health" class="form-select">
+                                    <option value="">全部等级</option>
+                                    {% for level in health_levels %}
+                                        <option value="{{ level }}" {% if selected_health == level %}selected{% endif %}>{{ level }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-3">
+                                <label for="failure_reason" class="form-label">失败原因</label>
+                                <select id="failure_reason" name="failure_reason" class="form-select">
+                                    <option value="">全部原因</option>
+                                    {% for reason in failure_reasons %}
+                                        <option value="{{ reason }}" {% if selected_failure_reason == reason %}selected{% endif %}>{{ reason }}</option>
+                                    {% endfor %}
                                 </select>
                             </div>
                             <div class="col-12 col-md-auto d-flex gap-2">
@@ -456,6 +605,9 @@ PAGE_TEMPLATE = """
                         <div>
                             <span class="fw-semibold">&#20195;&#29702;&#21015;&#34920;</span>
                             <span class="badge text-bg-light">{{ proxies|length }} items</span>
+                            <div class="text-secondary small mt-1">
+                                V5.1 会通过 ipify 真实验证代理出口；“池状态”按连续失败 5 次自动隔离为失效代理，“最近结果”显示最新一次真实检测是否成功。点击“详情”可查看最近 10 次检测记录。
+                            </div>
                         </div>
                         <div class="d-flex flex-column flex-sm-row gap-2">
                             <a href="{{ url_for('export_csv') }}" class="btn btn-sm btn-outline-success mobile-full">
@@ -473,26 +625,29 @@ PAGE_TEMPLATE = """
                         </div>
                     </div>
                     <div class="table-responsive">
-                        <table class="table table-hover mb-0">
+                        <table class="table table-hover mb-0 proxy-table">
                             <thead class="table-light">
                                 <tr>
-                                    <th>&#20195;&#29702;</th>
-                                    <th>Type</th>
-                                    <th>Status</th>
-                                    <th>Score</th>
-                                    <th>Success Rate</th>
-                                    <th>Exit IP</th>
-                                    <th>Latency</th>
-                                    <th>ISP</th>
-                                    <th>ASN</th>
-                                    <th>&#22791;&#27880;</th>
-                                    <th>&#26816;&#27979;&#29366;&#24577;</th>
-                                    <th>&#22269;&#23478;</th>
-                                    <th>&#24030;</th>
-                                    <th>&#22478;&#24066;</th>
-                                    <th>&#22833;&#36133;&#21407;&#22240;</th>
-                                    <th>&#26368;&#36817;&#26816;&#27979;</th>
-                                    <th class="text-end">&#25805;&#20316;</th>
+                                    <th class="cell-medium">&#20195;&#29702;</th>
+                                    <th class="cell-tiny">类型</th>
+                                    <th class="cell-small">池状态</th>
+                                    <th class="cell-health">健康等级</th>
+                                    <th class="cell-failures">连续失败</th>
+                                    <th class="cell-tiny">评分</th>
+                                    <th class="cell-small">成功率</th>
+                                    <th class="cell-medium">出口 IP</th>
+                                    <th class="cell-small">延迟</th>
+                                    <th class="cell-large">ISP</th>
+                                    <th class="cell-large">ASN</th>
+                                    <th class="cell-medium">&#22791;&#27880;</th>
+                                    <th class="cell-small">最近结果</th>
+                                    <th class="cell-small">&#22269;&#23478;</th>
+                                    <th class="cell-small">&#24030;</th>
+                                    <th class="cell-small">&#22478;&#24066;</th>
+                                    <th class="cell-reason">失败分类</th>
+                                    <th class="cell-message">最近错误</th>
+                                    <th class="cell-medium">&#26368;&#36817;&#26816;&#27979;</th>
+                                    <th class="cell-small text-end">&#25805;&#20316;</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -502,22 +657,35 @@ PAGE_TEMPLATE = """
                                         <td><span class="badge text-bg-dark">{{ proxy.proxy_type }}</span></td>
                                         <td>
                                             {% if proxy.status == 'online' %}
-                                                <span class="badge text-bg-success">online</span>
+                                                <span class="badge text-bg-success">在线</span>
                                             {% elif proxy.status == 'invalid' %}
-                                                <span class="badge text-bg-danger">invalid</span>
+                                                <span class="badge text-bg-danger">失效</span>
                                             {% elif proxy.status == 'offline' %}
-                                                <span class="badge text-bg-warning">offline</span>
+                                                <span class="badge text-bg-warning">离线</span>
                                             {% else %}
-                                                <span class="badge text-bg-secondary">unknown</span>
+                                                <span class="badge text-bg-secondary">未知</span>
                                             {% endif %}
                                         </td>
+                                        <td>
+                                            {% set level = health_level(proxy.success_rate) %}
+                                            {% if level == '健康' %}
+                                                <span class="badge text-bg-success">{{ level }}</span>
+                                            {% elif level == '一般' %}
+                                                <span class="badge text-bg-primary">{{ level }}</span>
+                                            {% elif level == '危险' %}
+                                                <span class="badge text-bg-warning">{{ level }}</span>
+                                            {% else %}
+                                                <span class="badge text-bg-danger">{{ level }}</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ proxy.consecutive_failures }} 次</td>
                                         <td>{{ proxy.score }}</td>
                                         <td>{{ proxy.success_rate }}%</td>
                                         <td class="proxy-address">{{ proxy.last_exit_ip or proxy.exit_ip or "-" }}</td>
                                         <td>{{ proxy.last_latency_ms or proxy.latency_ms or "-" }}</td>
-                                        <td class="text-break">{{ proxy.last_isp or proxy.isp or "-" }}</td>
-                                        <td class="text-break">{{ proxy.last_asn or proxy.asn or "-" }}</td>
-                                        <td>{{ proxy.label or "-" }}</td>
+                                        <td><div class="cell-compact" title="{{ proxy.last_isp or proxy.isp or '-' }}">{{ proxy.last_isp or proxy.isp or "-" }}</div></td>
+                                        <td><div class="cell-compact" title="{{ proxy.last_asn or proxy.asn or '-' }}">{{ proxy.last_asn or proxy.asn or "-" }}</div></td>
+                                        <td><div class="cell-compact" title="{{ proxy.label or '-' }}">{{ proxy.label or "-" }}</div></td>
                                         <td>
                                             {% if proxy.last_connectable is none %}
                                                 <span class="badge rounded-pill text-bg-secondary">&#26410;&#26816;&#27979;</span>
@@ -527,19 +695,30 @@ PAGE_TEMPLATE = """
                                                 <span class="badge rounded-pill text-bg-danger">&#19981;&#21487;&#36830;&#25509;</span>
                                             {% endif %}
                                         </td>
-                                        <td>{{ proxy.country or UNKNOWN }}</td>
-                                        <td>{{ proxy.state or UNKNOWN }}</td>
-                                        <td>{{ proxy.city or UNKNOWN }}</td>
-                                        <td class="failure-reason text-break">
+                                        <td><div class="cell-compact" title="{{ proxy.country or UNKNOWN }}">{{ proxy.country or UNKNOWN }}</div></td>
+                                        <td><div class="cell-compact" title="{{ proxy.state or UNKNOWN }}">{{ proxy.state or UNKNOWN }}</div></td>
+                                        <td><div class="cell-compact" title="{{ proxy.city or UNKNOWN }}">{{ proxy.city or UNKNOWN }}</div></td>
+                                        <td><div class="cell-compact" title="{{ proxy.last_failure_reason or proxy.failure_reason or '-' }}">{{ proxy.last_failure_reason or proxy.failure_reason or "-" }}</div></td>
+                                        <td>
                                             {% if proxy.last_connectable == 0 %}
-                                                {{ proxy.last_message or "-" }}
+                                                <div class="cell-compact" title="{{ proxy.last_message or '-' }}">{{ proxy.last_message or "-" }}</div>
                                             {% else %}
                                                 -
                                             {% endif %}
                                         </td>
                                         <td>{{ proxy.last_checked_at or "-" }}</td>
                                         <td>
-                                            <div class="d-flex justify-content-end gap-2">
+                                            <div class="d-flex justify-content-end gap-1">
+                                                <button
+                                                    class="btn btn-sm btn-outline-secondary"
+                                                    type="button"
+                                                    data-bs-toggle="collapse"
+                                                    data-bs-target="#history-{{ proxy.id }}"
+                                                    aria-expanded="false"
+                                                    aria-controls="history-{{ proxy.id }}"
+                                                >
+                                                    详情
+                                                </button>
                                                 <form action="{{ url_for('check_proxy_route', proxy_id=proxy.id) }}" method="post">
                                                     <button type="submit" class="btn btn-sm btn-outline-primary">
                                                         &#26816;&#27979;
@@ -557,9 +736,52 @@ PAGE_TEMPLATE = """
                                             </div>
                                         </td>
                                     </tr>
+                                    <tr class="collapse diagnostic-row" id="history-{{ proxy.id }}">
+                                        <td colspan="20">
+                                            <div class="p-2">
+                                                <div class="fw-semibold mb-2">最近 10 次检测记录</div>
+                                                <div class="table-responsive">
+                                                    <table class="table table-sm diagnostic-table mb-0">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>时间</th>
+                                                                <th>状态</th>
+                                                                <th>延迟</th>
+                                                                <th>出口 IP</th>
+                                                                <th>失败原因</th>
+                                                                <th>消息</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            {% for item in proxy_check_map.get(proxy.id, []) %}
+                                                                <tr>
+                                                                    <td>{{ item.checked_at }}</td>
+                                                                    <td>
+                                                                        {% if item.connectable %}
+                                                                            <span class="badge text-bg-success">可连接</span>
+                                                                        {% else %}
+                                                                            <span class="badge text-bg-danger">不可连接</span>
+                                                                        {% endif %}
+                                                                    </td>
+                                                                    <td>{{ item.latency_ms or "-" }}</td>
+                                                                    <td class="proxy-address">{{ item.exit_ip or "-" }}</td>
+                                                                    <td>{{ item.failure_reason or "-" }}</td>
+                                                                    <td><div class="cell-compact" title="{{ item.message }}">{{ item.message }}</div></td>
+                                                                </tr>
+                                                            {% else %}
+                                                                <tr>
+                                                                    <td colspan="6" class="text-center text-secondary py-3">暂无检测记录</td>
+                                                                </tr>
+                                                            {% endfor %}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
                                 {% else %}
                                     <tr>
-                                        <td colspan="17" class="text-center text-secondary py-5">
+                                        <td colspan="20" class="text-center text-secondary py-5">
                                             &#26242;&#26080;&#20195;&#29702;&#65292;&#35831;&#20808;&#28155;&#21152; IP &#21644;&#31471;&#21475;&#12290;
                                         </td>
                                     </tr>
@@ -569,26 +791,66 @@ PAGE_TEMPLATE = """
                     </div>
                 </div>
 
-                <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">&#21382;&#21490;&#35760;&#24405;</div>
+                <div class="card border-0 shadow-sm mb-4">
+                    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                        <span class="fw-semibold">失效代理列表</span>
+                        <span class="badge text-bg-danger">{{ invalid_proxies|length }} items</span>
+                    </div>
                     <div class="table-responsive">
-                        <table class="table table-striped mb-0">
+                        <table class="table table-sm table-striped mb-0 history-table">
                             <thead class="table-light">
                                 <tr>
-                                    <th>&#26816;&#27979;&#26102;&#38388;</th>
-                                    <th>&#20195;&#29702;</th>
-                                    <th>&#29366;&#24577;</th>
-                                    <th>&#22269;&#23478;</th>
-                                    <th>&#24030;</th>
-                                    <th>&#22478;&#24066;</th>
-                                    <th>&#28040;&#24687;</th>
+                                    <th class="cell-medium">代理</th>
+                                    <th class="cell-health">健康等级</th>
+                                    <th class="cell-failures">连续失败</th>
+                                    <th class="cell-reason">失败分类</th>
+                                    <th class="cell-medium">最近检测</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for proxy in invalid_proxies %}
+                                    <tr>
+                                        <td class="proxy-address">{{ proxy.ip }}:{{ proxy.port }}</td>
+                                        <td><span class="badge text-bg-danger">{{ health_level(proxy.success_rate) }}</span></td>
+                                        <td>{{ proxy.consecutive_failures }} 次</td>
+                                        <td><div class="cell-compact" title="{{ proxy.last_failure_reason or proxy.failure_reason or '-' }}">{{ proxy.last_failure_reason or proxy.failure_reason or "-" }}</div></td>
+                                        <td>{{ proxy.last_checked_at or "-" }}</td>
+                                    </tr>
+                                {% else %}
+                                    <tr>
+                                        <td colspan="5" class="text-center text-secondary py-3">暂无自动隔离的失效代理</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white">
+                        <div class="fw-semibold">&#21382;&#21490;&#35760;&#24405;</div>
+                        <div class="text-secondary small mt-1">
+                            历史记录保留每次检测当时的结果，不会跟随当前代理池状态自动改写；V5 之前的记录可能来自旧检测规则。
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-striped mb-0 history-table">
+                            <thead class="table-light">
+                                <tr>
+                                    <th class="history-time">&#26816;&#27979;&#26102;&#38388;</th>
+                                    <th class="cell-medium">&#20195;&#29702;</th>
+                                    <th class="history-status">&#29366;&#24577;</th>
+                                    <th class="cell-small">&#22269;&#23478;</th>
+                                    <th class="cell-small">&#24030;</th>
+                                    <th class="cell-small">&#22478;&#24066;</th>
+                                    <th class="history-message">&#28040;&#24687;</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for check in recent_checks %}
                                     <tr>
-                                        <td>{{ check.checked_at }}</td>
-                                        <td class="proxy-address">{{ check.ip }}:{{ check.port }}</td>
+                                        <td><div class="cell-compact" title="{{ check.checked_at }}">{{ check.checked_at }}</div></td>
+                                        <td><div class="proxy-address cell-compact" title="{{ check.ip }}:{{ check.port }}">{{ check.ip }}:{{ check.port }}</div></td>
                                         <td>
                                             {% if check.connectable %}
                                                 <span class="badge text-bg-success">&#21487;&#36830;&#25509;</span>
@@ -596,10 +858,10 @@ PAGE_TEMPLATE = """
                                                 <span class="badge text-bg-danger">&#19981;&#21487;&#36830;&#25509;</span>
                                             {% endif %}
                                         </td>
-                                        <td>{{ check.country }}</td>
-                                        <td>{{ check.state }}</td>
-                                        <td>{{ check.city }}</td>
-                                        <td class="text-break">{{ check.message }}</td>
+                                        <td><div class="cell-compact" title="{{ check.country|replace('Unknown', '未知') }}">{{ check.country|replace('Unknown', '未知') }}</div></td>
+                                        <td><div class="cell-compact" title="{{ check.state|replace('Unknown', '未知') }}">{{ check.state|replace('Unknown', '未知') }}</div></td>
+                                        <td><div class="cell-compact" title="{{ check.city|replace('Unknown', '未知') }}">{{ check.city|replace('Unknown', '未知') }}</div></td>
+                                        <td><div class="cell-compact" title="{{ check.message }}">{{ check.message }}</div></td>
                                     </tr>
                                 {% else %}
                                     <tr>
@@ -619,26 +881,54 @@ PAGE_TEMPLATE = """
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         const chartData = {{ chart_data|tojson }};
-        const lineOptions = { responsive: true, scales: { y: { beginAtZero: true, max: 100 } } };
+        const commonChartOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    labels: { boxWidth: 36, font: { size: 12 } }
+                }
+            }
+        };
+        const lineOptions = {
+            ...commonChartOptions,
+            scales: {
+                x: { ticks: { maxRotation: 0, autoSkip: true } },
+                y: { beginAtZero: true, max: 100 }
+            }
+        };
         new Chart(document.getElementById("onlineRateChart"), {
             type: "line",
-            data: { labels: chartData.labels, datasets: [{ label: "Online %", data: chartData.online_rates, borderColor: "#0d6efd", tension: 0.25 }] },
+            data: { labels: chartData.labels, datasets: [{ label: "在线率 %", data: chartData.online_rates, borderColor: "#0d6efd", tension: 0.25, pointRadius: 2 }] },
             options: lineOptions
         });
         new Chart(document.getElementById("proxyGrowthChart"), {
             type: "line",
-            data: { labels: chartData.labels, datasets: [{ label: "Proxies", data: chartData.proxy_growth, borderColor: "#198754", tension: 0.25 }] },
-            options: { responsive: true, scales: { y: { beginAtZero: true } } }
+            data: { labels: chartData.labels, datasets: [{ label: "代理数量", data: chartData.proxy_growth, borderColor: "#198754", tension: 0.25, pointRadius: 2 }] },
+            options: {
+                ...commonChartOptions,
+                scales: {
+                    x: { ticks: { maxRotation: 0, autoSkip: true } },
+                    y: { beginAtZero: true }
+                }
+            }
         });
         new Chart(document.getElementById("failureRateChart"), {
             type: "bar",
-            data: { labels: chartData.labels, datasets: [{ label: "Failure %", data: chartData.failure_rates, backgroundColor: "#dc3545" }] },
+            data: { labels: chartData.labels, datasets: [{ label: "失败率 %", data: chartData.failure_rates, backgroundColor: "#dc3545" }] },
             options: lineOptions
         });
         new Chart(document.getElementById("countryChart"), {
             type: "doughnut",
             data: { labels: chartData.country_labels, datasets: [{ data: chartData.country_counts, backgroundColor: ["#0d6efd", "#198754", "#ffc107", "#dc3545", "#6f42c1", "#20c997"] }] },
-            options: { responsive: true }
+            options: {
+                ...commonChartOptions,
+                cutout: "58%",
+                plugins: {
+                    ...commonChartOptions.plugins,
+                    legend: { position: "top", labels: { boxWidth: 28, font: { size: 12 } } }
+                }
+            }
         });
     </script>
 </body>
@@ -899,6 +1189,7 @@ def init_db() -> None:
                 latency_ms INTEGER,
                 isp TEXT NOT NULL DEFAULT '',
                 asn TEXT NOT NULL DEFAULT '',
+                failure_reason TEXT NOT NULL DEFAULT '',
                 label TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -918,6 +1209,7 @@ def init_db() -> None:
                 latency_ms INTEGER,
                 isp TEXT NOT NULL DEFAULT '',
                 asn TEXT NOT NULL DEFAULT '',
+                failure_reason TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY(proxy_id) REFERENCES proxies(id) ON DELETE CASCADE
             );
 
@@ -977,6 +1269,7 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "latency_ms": "INTEGER",
         "isp": "TEXT NOT NULL DEFAULT ''",
         "asn": "TEXT NOT NULL DEFAULT ''",
+        "failure_reason": "TEXT NOT NULL DEFAULT ''",
     }
     for column, definition in proxy_column_defaults.items():
         if column not in columns:
@@ -989,6 +1282,7 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "latency_ms": "INTEGER",
         "isp": "TEXT NOT NULL DEFAULT ''",
         "asn": "TEXT NOT NULL DEFAULT ''",
+        "failure_reason": "TEXT NOT NULL DEFAULT ''",
     }
     for column, definition in check_column_defaults.items():
         if column not in check_columns:
@@ -1198,6 +1492,43 @@ def query_exit_location(exit_ip: str) -> dict[str, str]:
     }
 
 
+def classify_failure(error: BaseException | str, response: requests.Response | None = None) -> str:
+    if response is not None and response.status_code >= 400:
+        return "HTTP失败"
+
+    text = str(error).lower()
+    if isinstance(error, (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.Timeout)):
+        return "连接超时"
+    if isinstance(error, requests.exceptions.SSLError) or isinstance(error, ssl.SSLError):
+        return "TLS失败"
+    if isinstance(error, requests.exceptions.HTTPError):
+        return "HTTP失败"
+    if isinstance(error, socket.gaierror) or "name resolution" in text or "getaddrinfo" in text or "dns" in text:
+        return "DNS失败"
+    if "timed out" in text or "timeout" in text:
+        return "连接超时"
+    if "connection refused" in text or "actively refused" in text or "10061" in text:
+        return "连接被拒绝"
+    if "connection reset" in text or "connectionreseterror" in text or "10054" in text or "remote end closed" in text:
+        return "连接重置"
+    if "ssl" in text or "tls" in text or "certificate" in text:
+        return "TLS失败"
+    if "status code" in text or "bad status" in text:
+        return "HTTP失败"
+    return "HTTP失败"
+
+
+def health_level(success_rate: float | int | None) -> str:
+    rate = float(success_rate or 0)
+    if rate >= 90:
+        return "健康"
+    if rate >= 70:
+        return "一般"
+    if rate >= 40:
+        return "危险"
+    return "失效"
+
+
 def verify_proxy(proxy: sqlite3.Row) -> dict[str, object]:
     started_at = datetime.now()
     try:
@@ -1209,11 +1540,36 @@ def verify_proxy(proxy: sqlite3.Row) -> dict[str, object]:
         response.raise_for_status()
         exit_ip = response.json().get("ip", "")
         if not exit_ip:
-            raise requests.RequestException("ipify response did not include ip")
+            return {
+                "connectable": False,
+                "message": "ipify response did not include ip",
+                "failure_reason": "出口IP获取失败",
+                "exit_ip": "",
+                "latency_ms": None,
+                "country": UNKNOWN,
+                "state": UNKNOWN,
+                "city": UNKNOWN,
+                "isp": UNKNOWN,
+                "asn": UNKNOWN,
+            }
+    except requests.exceptions.HTTPError as exc:
+        return {
+            "connectable": False,
+            "message": str(exc),
+            "failure_reason": classify_failure(exc, exc.response),
+            "exit_ip": "",
+            "latency_ms": None,
+            "country": UNKNOWN,
+            "state": UNKNOWN,
+            "city": UNKNOWN,
+            "isp": UNKNOWN,
+            "asn": UNKNOWN,
+        }
     except (requests.RequestException, ValueError) as exc:
         return {
             "connectable": False,
             "message": str(exc),
+            "failure_reason": classify_failure(exc),
             "exit_ip": "",
             "latency_ms": None,
             "country": UNKNOWN,
@@ -1226,12 +1582,15 @@ def verify_proxy(proxy: sqlite3.Row) -> dict[str, object]:
     latency_ms = int((datetime.now() - started_at).total_seconds() * 1000)
     location = query_exit_location(exit_ip)
     message = "proxy verified"
+    failure_reason = ""
     if location["error"]:
         message = f"proxy verified; location: {location['error']}"
+        failure_reason = "地理位置查询失败"
 
     return {
         "connectable": True,
         "message": message,
+        "failure_reason": failure_reason,
         "exit_ip": exit_ip,
         "latency_ms": latency_ms,
         "country": location["country"],
@@ -1267,13 +1626,14 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
     result = verify_proxy(proxy)
     connectable = bool(result["connectable"])
     message = str(result["message"])
+    failure_reason = str(result.get("failure_reason") or "")
 
     checked_at = current_time()
     db.execute(
         """
         INSERT INTO checks
-            (proxy_id, checked_at, connectable, message, country, state, city, exit_ip, latency_ms, isp, asn)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (proxy_id, checked_at, connectable, message, country, state, city, exit_ip, latency_ms, isp, asn, failure_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             proxy["id"],
@@ -1287,6 +1647,7 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
             result["latency_ms"],
             result["isp"],
             result["asn"],
+            failure_reason,
         ),
     )
     if connectable:
@@ -1304,6 +1665,7 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
                 latency_ms = ?,
                 isp = ?,
                 asn = ?,
+                failure_reason = '',
                 updated_at = ?
             WHERE id = ?
             """,
@@ -1320,7 +1682,7 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
         )
     else:
         consecutive_failures = proxy["consecutive_failures"] + 1
-        new_status = "invalid" if consecutive_failures >= 3 else proxy["status"]
+        new_status = "invalid" if consecutive_failures >= INVALID_FAILURE_THRESHOLD else proxy["status"]
         if new_status == "unknown":
             new_status = "offline"
         new_score = max(0, proxy["score"] - 5)
@@ -1332,16 +1694,23 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
                 score = ?,
                 consecutive_failures = ?,
                 failure_count = failure_count + 1,
+                failure_reason = ?,
                 updated_at = ?
             WHERE id = ?
             """,
-            (new_status, new_score, consecutive_failures, checked_at, proxy["id"]),
+            (new_status, new_score, consecutive_failures, failure_reason, checked_at, proxy["id"]),
         )
     db.commit()
     return proxy
 
 
-def fetch_proxies(query: str = "", state: str = "", sort_by: str = "") -> list[sqlite3.Row]:
+def fetch_proxies(
+    query: str = "",
+    state: str = "",
+    sort_by: str = "",
+    health_filter: str = "",
+    failure_reason_filter: str = "",
+) -> list[sqlite3.Row]:
     where = ""
     params: list[str] = []
     conditions: list[str] = []
@@ -1356,14 +1725,18 @@ def fetch_proxies(query: str = "", state: str = "", sort_by: str = "") -> list[s
             OR c.country LIKE ?
             OR c.state LIKE ?
             OR c.city LIKE ?
+            OR c.failure_reason LIKE ?
             )
             """
         )
         like_query = f"%{query}%"
-        params.extend([like_query] * 7)
+        params.extend([like_query] * 8)
     if state:
         conditions.append("c.state = ?")
         params.append(state)
+    if failure_reason_filter:
+        conditions.append("COALESCE(NULLIF(c.failure_reason, ''), NULLIF(p.failure_reason, '')) = ?")
+        params.append(failure_reason_filter)
     if conditions:
         where = "WHERE " + " AND ".join(conditions)
 
@@ -1375,7 +1748,7 @@ def fetch_proxies(query: str = "", state: str = "", sort_by: str = "") -> list[s
     elif sort_by == "success_rate":
         order_by = "success_rate DESC, p.created_at DESC"
 
-    return get_db().execute(
+    rows = get_db().execute(
         """
         SELECT
             p.*,
@@ -1389,6 +1762,7 @@ def fetch_proxies(query: str = "", state: str = "", sort_by: str = "") -> list[s
             c.latency_ms AS last_latency_ms,
             c.isp AS last_isp,
             c.asn AS last_asn,
+            c.failure_reason AS last_failure_reason,
             CASE
                 WHEN (p.success_count + p.failure_count) = 0 THEN 0
                 ELSE ROUND((p.success_count * 100.0) / (p.success_count + p.failure_count), 1)
@@ -1405,6 +1779,9 @@ def fetch_proxies(query: str = "", state: str = "", sort_by: str = "") -> list[s
         """,
         params,
     ).fetchall()
+    if health_filter:
+        rows = [row for row in rows if health_level(row["success_rate"]) == health_filter]
+    return rows
 
 
 def fetch_recent_checks(limit: int = 20) -> list[sqlite3.Row]:
@@ -1418,6 +1795,34 @@ def fetch_recent_checks(limit: int = 20) -> list[sqlite3.Row]:
         """,
         (limit,),
     ).fetchall()
+
+
+def fetch_proxy_check_history(proxy_ids: list[int], limit_per_proxy: int = 10) -> dict[int, list[sqlite3.Row]]:
+    if not proxy_ids:
+        return {}
+    placeholders = ",".join("?" for _ in proxy_ids)
+    rows = get_db().execute(
+        f"""
+        SELECT *
+        FROM (
+            SELECT
+                c.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY c.proxy_id
+                    ORDER BY c.checked_at DESC, c.id DESC
+                ) AS row_number
+            FROM checks c
+            WHERE c.proxy_id IN ({placeholders})
+        )
+        WHERE row_number <= ?
+        ORDER BY proxy_id, checked_at DESC, id DESC
+        """,
+        [*proxy_ids, limit_per_proxy],
+    ).fetchall()
+    history: dict[int, list[sqlite3.Row]] = {proxy_id: [] for proxy_id in proxy_ids}
+    for row in rows:
+        history.setdefault(row["proxy_id"], []).append(row)
+    return history
 
 
 def build_stats(proxies: list[sqlite3.Row]) -> dict[str, int]:
@@ -1466,6 +1871,27 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
         top_isp_name, top_isp_count = max(isp_counts.items(), key=lambda item: item[1])
         top_isp = f"{top_isp_name} ({top_isp_count})"
 
+    failure_reason_counts = {reason: 0 for reason in FAILURE_REASON_SUMMARY}
+    for row in get_db().execute(
+        """
+        SELECT failure_reason, COUNT(*) AS count
+        FROM (
+            SELECT COALESCE(NULLIF(c.failure_reason, ''), NULLIF(p.failure_reason, '')) AS failure_reason
+            FROM proxies p
+            LEFT JOIN checks c ON c.id = (
+                SELECT id FROM checks
+                WHERE proxy_id = p.id
+                ORDER BY checked_at DESC, id DESC
+                LIMIT 1
+            )
+        )
+        WHERE failure_reason IN (?, ?, ?, ?)
+        GROUP BY failure_reason
+        """,
+        FAILURE_REASON_SUMMARY,
+    ).fetchall():
+        failure_reason_counts[row["failure_reason"]] = row["count"]
+
     return {
         "online_rate": round((online / total) * 100, 1) if total else 0,
         "last_checked_at": last_checked_at,
@@ -1475,6 +1901,7 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
         "slowest_proxy": f"{slowest['ip']}:{slowest['port']} ({slowest['latency_ms']} ms)" if slowest else "",
         "avg_success_rate": avg_success_rate,
         "top_isp": top_isp,
+        "failure_reason_counts": failure_reason_counts,
     }
 
 
@@ -1609,6 +2036,8 @@ def serialize_proxy(proxy: sqlite3.Row) -> dict[str, object]:
         "isp": proxy["isp"] or "",
         "asn": proxy["asn"] or "",
         "success_rate": proxy["success_rate"],
+        "health_level": health_level(proxy["success_rate"]),
+        "failure_reason": proxy["failure_reason"] if "failure_reason" in proxy.keys() else "",
         "score": proxy["score"],
         "last_checked": proxy["last_checked_at"],
     }
@@ -1716,6 +2145,7 @@ def fetch_online_proxies(
             c.latency_ms AS check_latency_ms,
             c.isp AS check_isp,
             c.asn AS check_asn,
+            c.failure_reason,
             c.checked_at AS last_checked_at,
             CASE
                 WHEN (p.success_count + p.failure_count) = 0 THEN 0
@@ -1832,21 +2262,43 @@ def index():
     query = request.args.get("q", "").strip()
     selected_state = request.args.get("state", "").strip()
     selected_sort = request.args.get("sort", "").strip()
+    selected_health = request.args.get("health", "").strip()
+    selected_failure_reason = request.args.get("failure_reason", "").strip()
     if selected_state not in STATE_FILTERS:
         selected_state = ""
     if selected_sort not in {"score", "latency", "success_rate"}:
         selected_sort = ""
-    proxies = fetch_proxies(query, selected_state, selected_sort)
+    if selected_health not in HEALTH_LEVELS:
+        selected_health = ""
+    if selected_failure_reason not in FAILURE_REASONS:
+        selected_failure_reason = ""
+    all_proxies = fetch_proxies()
+    proxies = fetch_proxies(
+        query,
+        selected_state,
+        selected_sort,
+        selected_health,
+        selected_failure_reason,
+    )
+    proxy_check_map = fetch_proxy_check_history([proxy["id"] for proxy in proxies])
     return render_template_string(
         PAGE_TEMPLATE,
+        failure_reasons=FAILURE_REASONS,
+        failure_summary_reasons=FAILURE_REASON_SUMMARY,
+        health_level=health_level,
+        health_levels=HEALTH_LEVELS,
         UNKNOWN=UNKNOWN,
         chart_data=build_chart_data(),
-        dashboard=build_dashboard_stats(fetch_proxies()),
+        dashboard=build_dashboard_stats(all_proxies),
+        invalid_proxies=[proxy for proxy in all_proxies if proxy["status"] == "invalid"],
         query=query,
         proxy_types=PROXY_TYPES,
+        proxy_check_map=proxy_check_map,
         proxies=proxies,
         recent_checks=fetch_recent_checks(),
         scheduler_config=scheduler_settings(),
+        selected_failure_reason=selected_failure_reason,
+        selected_health=selected_health,
         selected_state=selected_state,
         selected_sort=selected_sort,
         state_filters=STATE_FILTERS,
@@ -2118,6 +2570,7 @@ def export_csv():
             "last_checked_at",
             "connectable",
             "failure_reason",
+            "health_level",
             "exit_ip",
             "latency_ms",
             "isp",
@@ -2138,7 +2591,8 @@ def export_csv():
                 proxy["label"],
                 proxy["last_checked_at"] or "",
                 "" if proxy["last_connectable"] is None else proxy["last_connectable"],
-                proxy["last_message"] if proxy["last_connectable"] == 0 else "",
+                proxy["last_failure_reason"] or proxy["failure_reason"] or "",
+                health_level(proxy["success_rate"]),
                 proxy["last_exit_ip"] or proxy["exit_ip"] or "",
                 proxy["last_latency_ms"] or proxy["latency_ms"] or "",
                 proxy["last_isp"] or proxy["isp"] or "",
