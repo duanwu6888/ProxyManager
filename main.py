@@ -1,6 +1,7 @@
 import csv
 import io
 import ipaddress
+import os
 import sqlite3
 import socket
 import urllib.error
@@ -18,8 +19,20 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 
 app = Flask(__name__)
-app.config["DATABASE"] = "proxy_manager.db"
-app.secret_key = "proxy-manager-dev-secret"
+
+
+def resolve_database_path(database_url: str) -> str:
+    if database_url.startswith("sqlite:///"):
+        return database_url.removeprefix("sqlite:///")
+    if database_url.startswith("sqlite://"):
+        return database_url.removeprefix("sqlite://")
+    return database_url
+
+
+app.config["DATABASE"] = resolve_database_path(
+    os.environ.get("DATABASE_URL", "sqlite:///proxy_manager.db")
+)
+app.secret_key = os.environ.get("SECRET_KEY", "proxy-manager-dev-secret")
 
 CSV_FILE = Path("proxy_check_results.csv")
 CONNECT_TIMEOUT_SECONDS = 5
@@ -1415,6 +1428,9 @@ PROVIDERS_TEMPLATE = """
 
 def get_db() -> sqlite3.Connection:
     if "db" not in g:
+        database_path = Path(app.config["DATABASE"])
+        if database_path.parent != Path("."):
+            database_path.parent.mkdir(parents=True, exist_ok=True)
         g.db = sqlite3.connect(app.config["DATABASE"])
         g.db.row_factory = sqlite3.Row
         g.db.execute("PRAGMA foreign_keys = ON")
@@ -1517,6 +1533,7 @@ def init_db() -> None:
         )
         ensure_schema(db)
         db.commit()
+        seed_env_api_key(db)
         import_csv_if_empty(db)
 
 
@@ -1647,6 +1664,31 @@ def ensure_schema(db: sqlite3.Connection) -> None:
 
 def ensure_table(db: sqlite3.Connection, _name: str, ddl: str) -> None:
     db.execute(ddl)
+
+
+def seed_env_api_key(db: sqlite3.Connection) -> None:
+    api_key = os.environ.get("API_KEY", "").strip()
+    if not api_key:
+        return
+    now = current_time()
+    cursor = db.execute(
+        """
+        INSERT OR IGNORE INTO users (username, password_hash, created_at)
+        VALUES ('system', ?, ?)
+        """,
+        (generate_password_hash(secrets.token_urlsafe(24)), now),
+    )
+    user = db.execute("SELECT id FROM users WHERE username = 'system'").fetchone()
+    if user is None:
+        return
+    db.execute(
+        """
+        INSERT OR IGNORE INTO api_keys (user_id, api_key, status, created_at)
+        VALUES (?, ?, 'active', ?)
+        """,
+        (user["id"], api_key, now),
+    )
+    db.commit()
 
 
 def import_csv_if_empty(db: sqlite3.Connection) -> None:
@@ -3279,4 +3321,9 @@ init_db()
 
 if __name__ == "__main__":
     start_scheduler()
-    app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)
+    app.run(
+        host=os.environ.get("APP_HOST", "127.0.0.1"),
+        port=int(os.environ.get("APP_PORT", "5000")),
+        debug=os.environ.get("FLASK_DEBUG", "0") == "1",
+        use_reloader=False,
+    )
