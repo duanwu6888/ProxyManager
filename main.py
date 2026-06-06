@@ -246,7 +246,7 @@ PAGE_TEMPLATE = """
         </section>
 
         <section class="row g-3 mb-4">
-            <div class="col-6 col-xl-3">
+            <div class="col-6 col-xl">
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-body">
                         <div class="text-secondary small">Average Latency</div>
@@ -254,7 +254,7 @@ PAGE_TEMPLATE = """
                     </div>
                 </div>
             </div>
-            <div class="col-6 col-xl-3">
+            <div class="col-6 col-xl">
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-body">
                         <div class="text-secondary small">Fastest Proxy</div>
@@ -262,7 +262,7 @@ PAGE_TEMPLATE = """
                     </div>
                 </div>
             </div>
-            <div class="col-6 col-xl-3">
+            <div class="col-6 col-xl">
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-body">
                         <div class="text-secondary small">Slowest Proxy</div>
@@ -270,11 +270,19 @@ PAGE_TEMPLATE = """
                     </div>
                 </div>
             </div>
-            <div class="col-6 col-xl-3">
+            <div class="col-6 col-xl">
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-body">
                         <div class="text-secondary small">Average Success Rate</div>
                         <div class="h3 mb-0">{{ dashboard.avg_success_rate }}%</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 col-xl">
+                <div class="card dashboard-card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Top ISP</div>
+                        <div class="fw-semibold text-break">{{ dashboard.top_isp or "-" }}</div>
                     </div>
                 </div>
             </div>
@@ -1448,6 +1456,15 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
     )
     rates = [proxy["success_rate"] for proxy in proxies if proxy["success_rate"] is not None]
     avg_success_rate = round(sum(rates) / len(rates), 1) if rates else 0
+    isp_counts: dict[str, int] = {}
+    for proxy in proxies:
+        isp = proxy["isp"] or proxy["last_isp"] or ""
+        if isp and isp != UNKNOWN:
+            isp_counts[isp] = isp_counts.get(isp, 0) + 1
+    top_isp = ""
+    if isp_counts:
+        top_isp_name, top_isp_count = max(isp_counts.items(), key=lambda item: item[1])
+        top_isp = f"{top_isp_name} ({top_isp_count})"
 
     return {
         "online_rate": round((online / total) * 100, 1) if total else 0,
@@ -1457,6 +1474,7 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
         "fastest_proxy": f"{fastest['ip']}:{fastest['port']} ({fastest['latency_ms']} ms)" if fastest else "",
         "slowest_proxy": f"{slowest['ip']}:{slowest['port']} ({slowest['latency_ms']} ms)" if slowest else "",
         "avg_success_rate": avg_success_rate,
+        "top_isp": top_isp,
     }
 
 
