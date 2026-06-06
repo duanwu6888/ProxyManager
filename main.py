@@ -10,6 +10,7 @@ import secrets
 from datetime import datetime
 from pathlib import Path
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, Response, flash, g, jsonify, redirect, render_template_string, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -23,6 +24,9 @@ CONNECT_TIMEOUT_SECONDS = 5
 UNKNOWN = "Unknown"
 PROXY_TYPES = ("HTTP", "HTTPS", "SOCKS5", "SOCKS4")
 STATE_FILTERS = ("California", "New York", "Texas", "Florida")
+SCHEDULER_JOB_ID = "proxy_auto_check"
+DEFAULT_SCHEDULE_SECONDS = 300
+scheduler = BackgroundScheduler(daemon=True)
 
 PAGE_TEMPLATE = """
 <!doctype html>
@@ -35,6 +39,7 @@ PAGE_TEMPLATE = """
         href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
         rel="stylesheet"
     >
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <style>
         body {
             background: #f4f6f9;
@@ -189,15 +194,30 @@ PAGE_TEMPLATE = """
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-header bg-white fw-semibold">Auto Check</div>
                     <div class="card-body">
-                        <label for="auto-check-interval" class="form-label">Interval</label>
-                        <select id="auto-check-interval" class="form-select">
-                            <option value="0">Off</option>
-                            <option value="300">5 minutes</option>
-                            <option value="1800">30 minutes</option>
-                            <option value="3600">1 hour</option>
-                        </select>
-                        <div id="auto-check-status" class="form-text mt-2">
-                            Auto check is currently off.
+                        <form action="{{ url_for('update_scheduler') }}" method="post" class="vstack gap-2">
+                            <label for="schedule_interval" class="form-label">Interval</label>
+                            <select id="schedule_interval" name="interval_seconds" class="form-select">
+                                <option value="300" {% if scheduler_config.interval_seconds == 300 %}selected{% endif %}>5 minutes</option>
+                                <option value="1800" {% if scheduler_config.interval_seconds == 1800 %}selected{% endif %}>30 minutes</option>
+                                <option value="3600" {% if scheduler_config.interval_seconds == 3600 %}selected{% endif %}>1 hour</option>
+                                <option value="21600" {% if scheduler_config.interval_seconds == 21600 %}selected{% endif %}>6 hours</option>
+                                <option value="custom">Custom</option>
+                            </select>
+                            <input
+                                name="custom_interval_seconds"
+                                class="form-control"
+                                inputmode="numeric"
+                                placeholder="Custom seconds, minimum 60"
+                            >
+                            <div class="form-check">
+                                <input id="schedule_enabled" name="enabled" value="1" type="checkbox" class="form-check-input" {% if scheduler_config.enabled %}checked{% endif %}>
+                                <label for="schedule_enabled" class="form-check-label">Enable background scheduler</label>
+                            </div>
+                            <button type="submit" class="btn btn-primary mobile-full">Save Scheduler</button>
+                        </form>
+                        <div class="form-text mt-2">
+                            Current: {% if scheduler_config.enabled %}enabled{% else %}disabled{% endif %},
+                            every {{ scheduler_config.interval_seconds }} seconds.
                         </div>
                     </div>
                 </div>
@@ -218,6 +238,33 @@ PAGE_TEMPLATE = """
                         <div class="h5 mb-1">{{ dashboard.last_checked_at or "-" }}</div>
                         <div class="text-secondary small">Most recent check record</div>
                     </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="row g-4 mb-4">
+            <div class="col-12 col-xl-6">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">Online Rate Trend</div>
+                    <div class="card-body"><canvas id="onlineRateChart"></canvas></div>
+                </div>
+            </div>
+            <div class="col-12 col-xl-6">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">Proxy Growth</div>
+                    <div class="card-body"><canvas id="proxyGrowthChart"></canvas></div>
+                </div>
+            </div>
+            <div class="col-12 col-xl-6">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">Failure Rate</div>
+                    <div class="card-body"><canvas id="failureRateChart"></canvas></div>
+                </div>
+            </div>
+            <div class="col-12 col-xl-6">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">Country Stats</div>
+                    <div class="card-body"><canvas id="countryChart"></canvas></div>
                 </div>
             </div>
         </section>
@@ -376,6 +423,9 @@ PAGE_TEMPLATE = """
                                 <tr>
                                     <th>&#20195;&#29702;</th>
                                     <th>Type</th>
+                                    <th>Status</th>
+                                    <th>Score</th>
+                                    <th>Success Rate</th>
                                     <th>&#22791;&#27880;</th>
                                     <th>&#26816;&#27979;&#29366;&#24577;</th>
                                     <th>&#22269;&#23478;</th>
@@ -391,6 +441,19 @@ PAGE_TEMPLATE = """
                                     <tr>
                                         <td class="proxy-address fw-semibold">{{ proxy.ip }}:{{ proxy.port }}</td>
                                         <td><span class="badge text-bg-dark">{{ proxy.proxy_type }}</span></td>
+                                        <td>
+                                            {% if proxy.status == 'online' %}
+                                                <span class="badge text-bg-success">online</span>
+                                            {% elif proxy.status == 'invalid' %}
+                                                <span class="badge text-bg-danger">invalid</span>
+                                            {% elif proxy.status == 'offline' %}
+                                                <span class="badge text-bg-warning">offline</span>
+                                            {% else %}
+                                                <span class="badge text-bg-secondary">unknown</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ proxy.score }}</td>
+                                        <td>{{ proxy.success_rate }}%</td>
                                         <td>{{ proxy.label or "-" }}</td>
                                         <td>
                                             {% if proxy.last_connectable is none %}
@@ -433,7 +496,7 @@ PAGE_TEMPLATE = """
                                     </tr>
                                 {% else %}
                                     <tr>
-                                        <td colspan="10" class="text-center text-secondary py-5">
+                                        <td colspan="13" class="text-center text-secondary py-5">
                                             &#26242;&#26080;&#20195;&#29702;&#65292;&#35831;&#20808;&#28155;&#21152; IP &#21644;&#31471;&#21475;&#12290;
                                         </td>
                                     </tr>
@@ -492,50 +555,28 @@ PAGE_TEMPLATE = """
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        (() => {
-            const select = document.getElementById("auto-check-interval");
-            const status = document.getElementById("auto-check-status");
-            const storageKey = "proxymanager.autoCheckSeconds";
-            let timerId = null;
-
-            const setStatus = (seconds) => {
-                if (!status) return;
-                if (!seconds) {
-                    status.textContent = "Auto check is currently off.";
-                    return;
-                }
-                const label = seconds === 300 ? "5 minutes" : seconds === 1800 ? "30 minutes" : "1 hour";
-                status.textContent = `Auto check enabled. Running every ${label}.`;
-            };
-
-            const schedule = (seconds) => {
-                if (timerId) {
-                    window.clearInterval(timerId);
-                    timerId = null;
-                }
-                setStatus(seconds);
-                if (!seconds) return;
-                timerId = window.setInterval(async () => {
-                    try {
-                        await fetch("{{ url_for('check_all') }}", { method: "POST" });
-                        window.location.reload();
-                    } catch (error) {
-                        status.textContent = `Auto check failed: ${error}`;
-                    }
-                }, seconds * 1000);
-            };
-
-            if (select) {
-                const savedSeconds = Number(window.localStorage.getItem(storageKey) || "0");
-                select.value = String(savedSeconds);
-                schedule(savedSeconds);
-                select.addEventListener("change", () => {
-                    const seconds = Number(select.value || "0");
-                    window.localStorage.setItem(storageKey, String(seconds));
-                    schedule(seconds);
-                });
-            }
-        })();
+        const chartData = {{ chart_data|tojson }};
+        const lineOptions = { responsive: true, scales: { y: { beginAtZero: true, max: 100 } } };
+        new Chart(document.getElementById("onlineRateChart"), {
+            type: "line",
+            data: { labels: chartData.labels, datasets: [{ label: "Online %", data: chartData.online_rates, borderColor: "#0d6efd", tension: 0.25 }] },
+            options: lineOptions
+        });
+        new Chart(document.getElementById("proxyGrowthChart"), {
+            type: "line",
+            data: { labels: chartData.labels, datasets: [{ label: "Proxies", data: chartData.proxy_growth, borderColor: "#198754", tension: 0.25 }] },
+            options: { responsive: true, scales: { y: { beginAtZero: true } } }
+        });
+        new Chart(document.getElementById("failureRateChart"), {
+            type: "bar",
+            data: { labels: chartData.labels, datasets: [{ label: "Failure %", data: chartData.failure_rates, backgroundColor: "#dc3545" }] },
+            options: lineOptions
+        });
+        new Chart(document.getElementById("countryChart"), {
+            type: "doughnut",
+            data: { labels: chartData.country_labels, datasets: [{ data: chartData.country_counts, backgroundColor: ["#0d6efd", "#198754", "#ffc107", "#dc3545", "#6f42c1", "#20c997"] }] },
+            options: { responsive: true }
+        });
     </script>
 </body>
 </html>
@@ -786,6 +827,11 @@ def init_db() -> None:
                 ip TEXT NOT NULL,
                 port INTEGER NOT NULL,
                 proxy_type TEXT NOT NULL DEFAULT 'HTTP',
+                status TEXT NOT NULL DEFAULT 'unknown',
+                score INTEGER NOT NULL DEFAULT 100,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
                 label TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -830,6 +876,13 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS scheduler_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL DEFAULT 0,
+                interval_seconds INTEGER NOT NULL DEFAULT 300,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         ensure_schema(db)
@@ -843,6 +896,16 @@ def ensure_schema(db: sqlite3.Connection) -> None:
     }
     if "proxy_type" not in columns:
         db.execute("ALTER TABLE proxies ADD COLUMN proxy_type TEXT NOT NULL DEFAULT 'HTTP'")
+    proxy_column_defaults = {
+        "status": "TEXT NOT NULL DEFAULT 'unknown'",
+        "score": "INTEGER NOT NULL DEFAULT 100",
+        "consecutive_failures": "INTEGER NOT NULL DEFAULT 0",
+        "success_count": "INTEGER NOT NULL DEFAULT 0",
+        "failure_count": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for column, definition in proxy_column_defaults.items():
+        if column not in columns:
+            db.execute(f"ALTER TABLE proxies ADD COLUMN {column} {definition}")
     ensure_table(
         db,
         "users",
@@ -868,6 +931,25 @@ def ensure_schema(db: sqlite3.Connection) -> None:
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )
         """,
+    )
+    ensure_table(
+        db,
+        "scheduler_settings",
+        """
+        CREATE TABLE IF NOT EXISTS scheduler_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 0,
+            interval_seconds INTEGER NOT NULL DEFAULT 300,
+            updated_at TEXT NOT NULL
+        )
+        """,
+    )
+    db.execute(
+        """
+        INSERT OR IGNORE INTO scheduler_settings (id, enabled, interval_seconds, updated_at)
+        VALUES (1, 0, ?, ?)
+        """,
+        (DEFAULT_SCHEDULE_SECONDS, current_time()),
     )
     db.execute(
         """
@@ -1044,7 +1126,41 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
             location["city"],
         ),
     )
-    db.execute("UPDATE proxies SET updated_at = ? WHERE id = ?", (checked_at, proxy["id"]))
+    if connectable:
+        new_status = "online"
+        new_score = min(100, proxy["score"] + 1)
+        db.execute(
+            """
+            UPDATE proxies
+            SET
+                status = ?,
+                score = ?,
+                consecutive_failures = 0,
+                success_count = success_count + 1,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (new_status, new_score, checked_at, proxy["id"]),
+        )
+    else:
+        consecutive_failures = proxy["consecutive_failures"] + 1
+        new_status = "invalid" if consecutive_failures >= 3 else proxy["status"]
+        if new_status == "unknown":
+            new_status = "offline"
+        new_score = max(0, proxy["score"] - 5)
+        db.execute(
+            """
+            UPDATE proxies
+            SET
+                status = ?,
+                score = ?,
+                consecutive_failures = ?,
+                failure_count = failure_count + 1,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (new_status, new_score, consecutive_failures, checked_at, proxy["id"]),
+        )
     db.commit()
     return proxy
 
@@ -1084,7 +1200,11 @@ def fetch_proxies(query: str = "", state: str = "") -> list[sqlite3.Row]:
             c.message AS last_message,
             c.country,
             c.state,
-            c.city
+            c.city,
+            CASE
+                WHEN (p.success_count + p.failure_count) = 0 THEN 0
+                ELSE ROUND((p.success_count * 100.0) / (p.success_count + p.failure_count), 1)
+            END AS success_rate
         FROM proxies p
         LEFT JOIN checks c ON c.id = (
             SELECT id FROM checks
@@ -1137,6 +1257,124 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
         "last_checked_at": last_checked_at,
         "state_counts": state_counts,
     }
+
+
+def build_chart_data() -> dict[str, list]:
+    rows = get_db().execute(
+        """
+        SELECT substr(checked_at, 1, 10) AS day,
+               SUM(CASE WHEN connectable = 1 THEN 1 ELSE 0 END) AS success_count,
+               COUNT(*) AS total_count
+        FROM checks
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT 7
+        """
+    ).fetchall()
+    rows = list(reversed(rows))
+    labels = [row["day"] for row in rows]
+    online_rates = [
+        round((row["success_count"] * 100.0) / row["total_count"], 1) if row["total_count"] else 0
+        for row in rows
+    ]
+    failure_rates = [
+        round(((row["total_count"] - row["success_count"]) * 100.0) / row["total_count"], 1)
+        if row["total_count"] else 0
+        for row in rows
+    ]
+    proxy_growth = []
+    for day in labels:
+        proxy_growth.append(
+            get_db().execute(
+                "SELECT COUNT(*) FROM proxies WHERE substr(created_at, 1, 10) <= ?",
+                (day,),
+            ).fetchone()[0]
+        )
+
+    country_rows = get_db().execute(
+        """
+        SELECT COALESCE(c.country, ?) AS country, COUNT(*) AS count
+        FROM proxies p
+        LEFT JOIN checks c ON c.id = (
+            SELECT id FROM checks
+            WHERE proxy_id = p.id
+            ORDER BY checked_at DESC, id DESC
+            LIMIT 1
+        )
+        GROUP BY country
+        ORDER BY count DESC
+        LIMIT 6
+        """,
+        (UNKNOWN,),
+    ).fetchall()
+
+    if not labels:
+        labels = [datetime.now().strftime("%Y-%m-%d")]
+        online_rates = [0]
+        failure_rates = [0]
+        proxy_growth = [get_db().execute("SELECT COUNT(*) FROM proxies").fetchone()[0]]
+
+    return {
+        "labels": labels,
+        "online_rates": online_rates,
+        "failure_rates": failure_rates,
+        "proxy_growth": proxy_growth,
+        "country_labels": [row["country"] for row in country_rows] or [UNKNOWN],
+        "country_counts": [row["count"] for row in country_rows] or [0],
+    }
+
+
+def run_all_checks() -> int:
+    proxies = get_db().execute("SELECT id FROM proxies ORDER BY id").fetchall()
+    for proxy in proxies:
+        run_check(proxy["id"])
+    return len(proxies)
+
+
+def scheduled_check_job() -> None:
+    with app.app_context():
+        run_all_checks()
+
+
+def scheduler_settings() -> sqlite3.Row:
+    return get_db().execute("SELECT * FROM scheduler_settings WHERE id = 1").fetchone()
+
+
+def configure_scheduler(enabled: bool, interval_seconds: int) -> None:
+    interval_seconds = max(60, int(interval_seconds))
+    get_db().execute(
+        """
+        UPDATE scheduler_settings
+        SET enabled = ?, interval_seconds = ?, updated_at = ?
+        WHERE id = 1
+        """,
+        (1 if enabled else 0, interval_seconds, current_time()),
+    )
+    get_db().commit()
+    apply_scheduler_settings(enabled, interval_seconds)
+
+
+def apply_scheduler_settings(enabled: bool, interval_seconds: int) -> None:
+    if scheduler.get_job(SCHEDULER_JOB_ID):
+        scheduler.remove_job(SCHEDULER_JOB_ID)
+    if enabled:
+        scheduler.add_job(
+            scheduled_check_job,
+            "interval",
+            seconds=max(60, int(interval_seconds)),
+            id=SCHEDULER_JOB_ID,
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+
+
+def start_scheduler() -> None:
+    with app.app_context():
+        settings = scheduler_settings()
+        apply_scheduler_settings(bool(settings["enabled"]), settings["interval_seconds"])
+    if not scheduler.running:
+        scheduler.start()
 
 
 def serialize_proxy(proxy: sqlite3.Row) -> dict[str, object]:
@@ -1222,7 +1460,7 @@ def fetch_online_proxies(
     state: str | None = None,
     city: str | None = None,
 ) -> list[sqlite3.Row]:
-    conditions = ["c.connectable = 1"]
+    conditions = ["c.connectable = 1", "p.status = 'online'"]
     params: list[str] = []
     if country is not None:
         conditions.append("LOWER(c.country) = LOWER(?)")
@@ -1360,11 +1598,13 @@ def index():
     return render_template_string(
         PAGE_TEMPLATE,
         UNKNOWN=UNKNOWN,
+        chart_data=build_chart_data(),
         dashboard=build_dashboard_stats(fetch_proxies()),
         query=query,
         proxy_types=PROXY_TYPES,
         proxies=proxies,
         recent_checks=fetch_recent_checks(),
+        scheduler_config=scheduler_settings(),
         selected_state=selected_state,
         state_filters=STATE_FILTERS,
         stats=build_stats(proxies),
@@ -1572,10 +1812,27 @@ def check_all():
     auth_redirect = login_required()
     if auth_redirect:
         return auth_redirect
-    proxies = get_db().execute("SELECT id FROM proxies ORDER BY id").fetchall()
-    for proxy in proxies:
-        run_check(proxy["id"])
-    flash(f"\u6279\u91cf\u68c0\u6d4b\u5b8c\u6210\uff0c\u5171\u68c0\u6d4b {len(proxies)} \u4e2a\u4ee3\u7406\u3002")
+    checked_count = run_all_checks()
+    flash(f"\u6279\u91cf\u68c0\u6d4b\u5b8c\u6210\uff0c\u5171\u68c0\u6d4b {checked_count} \u4e2a\u4ee3\u7406\u3002")
+    return redirect(url_for("index"))
+
+
+@app.route("/scheduler", methods=["POST"])
+def update_scheduler():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    enabled = request.form.get("enabled") == "1"
+    interval_text = request.form.get("interval_seconds", "300")
+    if interval_text == "custom":
+        interval_text = request.form.get("custom_interval_seconds", "300")
+    try:
+        interval_seconds = int(interval_text)
+    except ValueError:
+        interval_seconds = DEFAULT_SCHEDULE_SECONDS
+    interval_seconds = max(60, interval_seconds)
+    configure_scheduler(enabled, interval_seconds)
+    flash(f"Scheduler {'enabled' if enabled else 'disabled'}; interval {interval_seconds} seconds.")
     return redirect(url_for("index"))
 
 
@@ -1723,4 +1980,5 @@ init_db()
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    start_scheduler()
+    app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)
