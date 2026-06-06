@@ -78,7 +78,7 @@ PAGE_TEMPLATE = """
 
         .proxy-table {
             table-layout: fixed;
-            min-width: 1500px;
+            min-width: 1660px;
             font-size: 0.82rem;
         }
 
@@ -146,6 +146,10 @@ PAGE_TEMPLATE = """
             width: 126px;
         }
 
+        .cell-recommend {
+            width: 88px;
+        }
+
         .diagnostic-row {
             background: #fbfcfe;
         }
@@ -209,7 +213,7 @@ PAGE_TEMPLATE = """
             }
 
             .proxy-table {
-                min-width: 1380px;
+                min-width: 1540px;
                 font-size: 0.78rem;
             }
 
@@ -314,6 +318,40 @@ PAGE_TEMPLATE = """
         </section>
 
         <section class="row g-3 mb-4">
+            <div class="col-12">
+                <div class="card dashboard-card border-0 shadow-sm">
+                    <div class="card-body d-flex flex-column flex-lg-row justify-content-between gap-3">
+                        <div>
+                            <div class="text-secondary small">最佳代理</div>
+                            {% if dashboard.best_proxy %}
+                                <div class="h4 mb-1 proxy-address">
+                                    {{ dashboard.best_proxy.ip }}:{{ dashboard.best_proxy.port }}
+                                </div>
+                                <div class="text-secondary small">
+                                    类型 {{ dashboard.best_proxy.proxy_type }} · 来源 {{ dashboard.best_proxy.provider_name or "默认来源" }}
+                                </div>
+                            {% else %}
+                                <div class="h4 mb-1">-</div>
+                                <div class="text-secondary small">暂无可推荐代理</div>
+                            {% endif %}
+                        </div>
+                        <div class="row g-3 flex-fill">
+                            <div class="col-4">
+                                <div class="text-secondary small">推荐分</div>
+                                <div class="h4 mb-0">{{ dashboard.best_proxy_recommend_score }}</div>
+                            </div>
+                            <div class="col-4">
+                                <div class="text-secondary small">成功率</div>
+                                <div class="h4 mb-0">{% if dashboard.best_proxy %}{{ dashboard.best_proxy.success_rate }}%{% else %}-{% endif %}</div>
+                            </div>
+                            <div class="col-4">
+                                <div class="text-secondary small">延迟</div>
+                                <div class="h4 mb-0">{% if dashboard.best_proxy %}{{ dashboard.best_proxy.last_latency_ms or dashboard.best_proxy.latency_ms or "-" }} ms{% else %}-{% endif %}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
             <div class="col-12 col-xl-4">
                 <div class="card dashboard-card border-0 shadow-sm">
                     <div class="card-header bg-white fw-semibold">自动检测</div>
@@ -685,6 +723,8 @@ PAGE_TEMPLATE = """
                             <thead class="table-light">
                                 <tr>
                                     <th class="cell-medium">&#20195;&#29702;</th>
+                                    <th class="cell-recommend">推荐</th>
+                                    <th class="cell-recommend">推荐分</th>
                                     <th class="cell-medium">来源</th>
                                     <th class="cell-tiny">类型</th>
                                     <th class="cell-small">池状态</th>
@@ -711,6 +751,14 @@ PAGE_TEMPLATE = """
                                 {% for proxy in proxies %}
                                     <tr>
                                         <td class="proxy-address fw-semibold">{{ proxy.ip }}:{{ proxy.port }}</td>
+                                        <td>
+                                            {% if proxy.id in top_proxy_ids %}
+                                                <span class="badge text-bg-warning">Top 10</span>
+                                            {% else %}
+                                                -
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ recommend_score(proxy) }}</td>
                                         <td><div class="cell-compact" title="{{ proxy.provider_name or '默认来源' }}">{{ proxy.provider_name or "默认来源" }}</div></td>
                                         <td><span class="badge text-bg-dark">{{ proxy.proxy_type }}</span></td>
                                         <td>
@@ -795,7 +843,7 @@ PAGE_TEMPLATE = """
                                         </td>
                                     </tr>
                                     <tr class="collapse diagnostic-row" id="history-{{ proxy.id }}">
-                                        <td colspan="21">
+                                        <td colspan="23">
                                             <div class="p-2">
                                                 <div class="fw-semibold mb-2">最近 10 次检测记录</div>
                                                 <div class="table-responsive">
@@ -839,7 +887,7 @@ PAGE_TEMPLATE = """
                                     </tr>
                                 {% else %}
                                     <tr>
-                                        <td colspan="21" class="text-center text-secondary py-5">
+                                        <td colspan="23" class="text-center text-secondary py-5">
                                             &#26242;&#26080;&#20195;&#29702;&#65292;&#35831;&#20808;&#28155;&#21152; IP &#21644;&#31471;&#21475;&#12290;
                                         </td>
                                     </tr>
@@ -1769,6 +1817,30 @@ def health_level(success_rate: float | int | None) -> str:
     return "失效"
 
 
+def latency_recommend_score(latency_ms: int | float | None) -> float:
+    if latency_ms is None:
+        return 0
+    latency = max(0, float(latency_ms))
+    if latency <= 500:
+        return 100
+    if latency >= 5000:
+        return 0
+    return round(100 - ((latency - 500) / 4500 * 100), 2)
+
+
+def recommend_score(proxy: sqlite3.Row | dict[str, object]) -> float:
+    success_rate = float(proxy["success_rate"] or 0)
+    latency_ms = proxy["latency_ms"]
+    if "last_latency_ms" in proxy.keys() and proxy["last_latency_ms"] is not None:
+        latency_ms = proxy["last_latency_ms"]
+    return round(
+        (success_rate * 0.5)
+        + (latency_recommend_score(latency_ms) * 0.3)
+        + (float(proxy["score"] or 0) * 0.2),
+        2,
+    )
+
+
 def verify_proxy(proxy: sqlite3.Row) -> dict[str, object]:
     started_at = datetime.now()
     try:
@@ -2075,6 +2147,26 @@ def fetch_proxy_check_history(proxy_ids: list[int], limit_per_proxy: int = 10) -
     return history
 
 
+def recommend_ranked_proxies(proxies: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    return sorted(
+        proxies,
+        key=lambda proxy: (
+            recommend_score(proxy),
+            proxy["success_rate"] or 0,
+            proxy["score"] or 0,
+        ),
+        reverse=True,
+    )
+
+
+def top_recommend_proxy_ids(proxies: list[sqlite3.Row], limit: int = 10) -> set[int]:
+    candidates = [
+        proxy for proxy in proxies
+        if proxy["last_connectable"] == 1 and proxy["status"] == "online"
+    ]
+    return {proxy["id"] for proxy in recommend_ranked_proxies(candidates)[:limit]}
+
+
 def build_stats(proxies: list[sqlite3.Row]) -> dict[str, int]:
     return {
         "total": len(proxies),
@@ -2140,6 +2232,12 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
                 sum(row["avg_latency"] or 0 for row in latency_rows) / len(latency_rows)
             )
 
+    best_proxy_candidates = [
+        proxy for proxy in proxies
+        if proxy["last_connectable"] == 1 and proxy["status"] == "online"
+    ]
+    best_proxy = recommend_ranked_proxies(best_proxy_candidates)[0] if best_proxy_candidates else None
+
     failure_reason_counts = {reason: 0 for reason in FAILURE_REASON_SUMMARY}
     for row in get_db().execute(
         """
@@ -2173,6 +2271,8 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
         "top_provider": top_provider,
         "provider_success_rate": provider_success_rate,
         "provider_latency": provider_latency,
+        "best_proxy": best_proxy,
+        "best_proxy_recommend_score": recommend_score(best_proxy) if best_proxy else 0,
         "failure_reason_counts": failure_reason_counts,
     }
 
@@ -2311,6 +2411,7 @@ def serialize_proxy(proxy: sqlite3.Row) -> dict[str, object]:
         "success_rate": proxy["success_rate"],
         "health_level": health_level(proxy["success_rate"]),
         "failure_reason": proxy["failure_reason"] if "failure_reason" in proxy.keys() else "",
+        "recommend_score": recommend_score(proxy),
         "score": proxy["score"],
         "last_checked": proxy["last_checked_at"],
     }
@@ -2386,6 +2487,8 @@ def fetch_online_proxies(
     country: str | None = None,
     state: str | None = None,
     city: str | None = None,
+    proxy_type: str | None = None,
+    provider: str | None = None,
 ) -> list[sqlite3.Row]:
     conditions = ["c.connectable = 1", "p.status = 'online'"]
     params: list[str] = []
@@ -2398,6 +2501,12 @@ def fetch_online_proxies(
     if city is not None:
         conditions.append("LOWER(c.city) = LOWER(?)")
         params.append(city)
+    if proxy_type is not None:
+        conditions.append("LOWER(p.proxy_type) = LOWER(?)")
+        params.append(proxy_type)
+    if provider is not None:
+        conditions.append("LOWER(sp.name) = LOWER(?)")
+        params.append(provider)
 
     return get_db().execute(
         """
@@ -2444,6 +2553,20 @@ def api_success(data, api_key: sqlite3.Row):
     log_api_request(request.path, True, api_key, 200)
     count = len(data) if isinstance(data, list) else 0 if data is None else 1
     return jsonify({"success": True, "count": count, "data": data})
+
+
+def best_proxy_response(
+    api_key: sqlite3.Row,
+    *,
+    proxy_type: str | None = None,
+    provider: str | None = None,
+    state: str | None = None,
+):
+    proxies = fetch_online_proxies(proxy_type=proxy_type, provider=provider, state=state)
+    if not proxies:
+        return api_success(None, api_key)
+    best_proxy = recommend_ranked_proxies(proxies)[0]
+    return api_success(serialize_proxy(best_proxy), api_key)
 
 
 def dashboard_metrics() -> dict[str, int]:
@@ -2629,6 +2752,7 @@ def index():
         providers=source_providers(),
         proxy_check_map=proxy_check_map,
         proxies=proxies,
+        recommend_score=recommend_score,
         recent_checks=fetch_recent_checks(),
         scheduler_config=scheduler_settings(),
         selected_failure_reason=selected_failure_reason,
@@ -2638,6 +2762,7 @@ def index():
         selected_sort=selected_sort,
         state_filters=STATE_FILTERS,
         stats=build_stats(proxies),
+        top_proxy_ids=top_recommend_proxy_ids(all_proxies),
     )
 
 
@@ -2993,6 +3118,7 @@ def export_csv():
             "asn",
             "success_rate",
             "score",
+            "recommend_score",
             "country",
             "state",
             "city",
@@ -3016,6 +3142,7 @@ def export_csv():
                 proxy["last_asn"] or proxy["asn"] or "",
                 proxy["success_rate"],
                 proxy["score"],
+                recommend_score(proxy),
                 proxy["country"] or "",
                 proxy["state"] or "",
                 proxy["city"] or "",
@@ -3038,6 +3165,11 @@ def api_docs():
     endpoints = [
         {"method": "GET", "path": "/api/proxies"},
         {"method": "GET", "path": "/api/random"},
+        {"method": "GET", "path": "/api/best"},
+        {"method": "GET", "path": "/api/best/http"},
+        {"method": "GET", "path": "/api/best/socks5"},
+        {"method": "GET", "path": "/api/best/provider/默认来源"},
+        {"method": "GET", "path": "/api/best/state/California"},
         {"method": "GET", "path": "/api/country/United States"},
         {"method": "GET", "path": "/api/state/California"},
         {"method": "GET", "path": "/api/city/Los Angeles"},
@@ -3068,6 +3200,46 @@ def api_random():
     if not proxies:
         return api_success(None, api_key)
     return api_success(serialize_proxy(random.choice(proxies)), api_key)
+
+
+@app.route("/api/best")
+def api_best():
+    api_key, key_error = require_api_key()
+    if key_error:
+        return key_error
+    return best_proxy_response(api_key)
+
+
+@app.route("/api/best/http")
+def api_best_http():
+    api_key, key_error = require_api_key()
+    if key_error:
+        return key_error
+    return best_proxy_response(api_key, proxy_type="HTTP")
+
+
+@app.route("/api/best/socks5")
+def api_best_socks5():
+    api_key, key_error = require_api_key()
+    if key_error:
+        return key_error
+    return best_proxy_response(api_key, proxy_type="SOCKS5")
+
+
+@app.route("/api/best/provider/<path:provider>")
+def api_best_provider(provider: str):
+    api_key, key_error = require_api_key()
+    if key_error:
+        return key_error
+    return best_proxy_response(api_key, provider=provider)
+
+
+@app.route("/api/best/state/<path:state>")
+def api_best_state(state: str):
+    api_key, key_error = require_api_key()
+    if key_error:
+        return key_error
+    return best_proxy_response(api_key, state=state)
 
 
 @app.route("/api/country/<path:country>")
