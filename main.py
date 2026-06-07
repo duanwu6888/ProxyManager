@@ -11,6 +11,7 @@ import secrets
 import ssl
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -40,6 +41,7 @@ IPIFY_URL = "https://api.ipify.org?format=json"
 IP_API_JSON_URL = "http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,as,query,message"
 UNKNOWN = "Unknown"
 PROXY_TYPES = ("HTTP", "HTTPS", "SOCKS5", "SOCKS4")
+PROTOCOL_STATUSES = ("端口开放", "协议错误", "认证失败", "超时", "连接重置", "无代理服务")
 STATE_FILTERS = ("California", "New York", "Texas", "Florida")
 HEALTH_LEVELS = ("健康", "一般", "危险", "失效")
 FAILURE_REASONS = (
@@ -161,6 +163,14 @@ PAGE_TEMPLATE = """
 
         .cell-recommend {
             width: 88px;
+        }
+
+        .cell-protocol {
+            width: 96px;
+        }
+
+        .cell-auth {
+            width: 92px;
         }
 
         .diagnostic-row {
@@ -580,6 +590,27 @@ PAGE_TEMPLATE = """
                                 >
                             </div>
                             <div>
+                                <label for="proxy_username" class="form-label">认证用户名</label>
+                                <input
+                                    id="proxy_username"
+                                    name="username"
+                                    class="form-control"
+                                    autocomplete="off"
+                                    placeholder="可选"
+                                >
+                            </div>
+                            <div>
+                                <label for="proxy_password" class="form-label">认证密码</label>
+                                <input
+                                    id="proxy_password"
+                                    name="password"
+                                    type="password"
+                                    class="form-control"
+                                    autocomplete="new-password"
+                                    placeholder="可选"
+                                >
+                            </div>
+                            <div>
                                 <label for="proxy_type" class="form-label">代理类型</label>
                                 <select id="proxy_type" name="proxy_type" class="form-select">
                                     {% for proxy_type in proxy_types %}
@@ -693,11 +724,11 @@ PAGE_TEMPLATE = """
                                 name="proxies"
                                 class="form-control"
                                 rows="5"
-                                placeholder="8.8.8.8:53&#10;1.1.1.1,53,DNS&#10;208.67.222.222 53 OpenDNS"
+                                placeholder="8.8.8.8:53&#10;1.1.1.1,53,DNS&#10;208.67.222.222 53 OpenDNS&#10;proxy.example.com:12345:user:pass"
                             ></textarea>
                             <div class="d-flex flex-column flex-sm-row justify-content-between gap-2">
                                 <div class="form-text">
-                                    &#27599;&#34892;&#19968;&#20010;&#20195;&#29702;&#65292;&#25903;&#25345; IP:PORT&#12289;IP,PORT,备注 &#25110; IP PORT 备注&#12290;
+                                    &#27599;&#34892;&#19968;&#20010;&#20195;&#29702;&#65292;&#25903;&#25345; IP:PORT&#12289;IP,PORT,备注&#12289;IP PORT 备注 或 IP:PORT:USER:PASS。
                                 </div>
                                 <button type="submit" class="btn btn-primary mobile-full">
                                     &#25209;&#37327;&#23548;&#20837;
@@ -740,6 +771,9 @@ PAGE_TEMPLATE = """
                                     <th class="cell-recommend">推荐分</th>
                                     <th class="cell-medium">来源</th>
                                     <th class="cell-tiny">类型</th>
+                                    <th class="cell-auth">认证状态</th>
+                                    <th class="cell-protocol">识别协议</th>
+                                    <th class="cell-protocol">协议诊断</th>
                                     <th class="cell-small">池状态</th>
                                     <th class="cell-health">健康等级</th>
                                     <th class="cell-failures">连续失败</th>
@@ -774,6 +808,31 @@ PAGE_TEMPLATE = """
                                         <td>{{ recommend_score(proxy) }}</td>
                                         <td><div class="cell-compact" title="{{ proxy.provider_name or '默认来源' }}">{{ proxy.provider_name or "默认来源" }}</div></td>
                                         <td><span class="badge text-bg-dark">{{ proxy.proxy_type }}</span></td>
+                                        <td>
+                                            {% set proxy_auth_status = auth_status(proxy) %}
+                                            {% if proxy_auth_status == '认证通过' %}
+                                                <span class="badge text-bg-success">{{ proxy_auth_status }}</span>
+                                            {% elif proxy_auth_status == '认证失败' %}
+                                                <span class="badge text-bg-danger">{{ proxy_auth_status }}</span>
+                                            {% elif proxy_auth_status == '已配置' %}
+                                                <span class="badge text-bg-primary">{{ proxy_auth_status }}</span>
+                                            {% else %}
+                                                <span class="badge text-bg-secondary">{{ proxy_auth_status }}</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ proxy.last_detected_proxy_type or proxy.detected_proxy_type or "-" }}</td>
+                                        <td>
+                                            {% set protocol_status = proxy.last_protocol_status or proxy.protocol_status or "-" %}
+                                            {% if protocol_status == '端口开放' %}
+                                                <span class="badge text-bg-success">{{ protocol_status }}</span>
+                                            {% elif protocol_status == '认证失败' %}
+                                                <span class="badge text-bg-warning">{{ protocol_status }}</span>
+                                            {% elif protocol_status == '-' %}
+                                                -
+                                            {% else %}
+                                                <span class="badge text-bg-danger">{{ protocol_status }}</span>
+                                            {% endif %}
+                                        </td>
                                         <td>
                                             {% if proxy.status == 'online' %}
                                                 <span class="badge text-bg-success">在线</span>
@@ -856,7 +915,7 @@ PAGE_TEMPLATE = """
                                         </td>
                                     </tr>
                                     <tr class="collapse diagnostic-row" id="history-{{ proxy.id }}">
-                                        <td colspan="23">
+                                        <td colspan="26">
                                             <div class="p-2">
                                                 <div class="fw-semibold mb-2">最近 10 次检测记录</div>
                                                 <div class="table-responsive">
@@ -867,6 +926,8 @@ PAGE_TEMPLATE = """
                                                                 <th>状态</th>
                                                                 <th>延迟</th>
                                                                 <th>出口 IP</th>
+                                                                <th>识别协议</th>
+                                                                <th>协议诊断</th>
                                                                 <th>失败原因</th>
                                                                 <th>消息</th>
                                                             </tr>
@@ -884,12 +945,14 @@ PAGE_TEMPLATE = """
                                                                     </td>
                                                                     <td>{{ item.latency_ms or "-" }}</td>
                                                                     <td class="proxy-address">{{ item.exit_ip or "-" }}</td>
+                                                                    <td>{{ item.detected_proxy_type or "-" }}</td>
+                                                                    <td>{{ item.protocol_status or "-" }}</td>
                                                                     <td>{{ item.failure_reason or "-" }}</td>
                                                                     <td><div class="cell-compact" title="{{ item.message }}">{{ item.message }}</div></td>
                                                                 </tr>
                                                             {% else %}
                                                                 <tr>
-                                                                    <td colspan="6" class="text-center text-secondary py-3">暂无检测记录</td>
+                                                                    <td colspan="8" class="text-center text-secondary py-3">暂无检测记录</td>
                                                                 </tr>
                                                             {% endfor %}
                                                         </tbody>
@@ -900,7 +963,7 @@ PAGE_TEMPLATE = """
                                     </tr>
                                 {% else %}
                                     <tr>
-                                        <td colspan="23" class="text-center text-secondary py-5">
+                                        <td colspan="26" class="text-center text-secondary py-5">
                                             &#26242;&#26080;&#20195;&#29702;&#65292;&#35831;&#20808;&#28155;&#21152; IP &#21644;&#31471;&#21475;&#12290;
                                         </td>
                                     </tr>
@@ -922,6 +985,8 @@ PAGE_TEMPLATE = """
                                     <th class="cell-medium">代理</th>
                                     <th class="cell-health">健康等级</th>
                                     <th class="cell-failures">连续失败</th>
+                                    <th class="cell-protocol">识别协议</th>
+                                    <th class="cell-protocol">协议诊断</th>
                                     <th class="cell-reason">失败分类</th>
                                     <th class="cell-medium">最近检测</th>
                                 </tr>
@@ -932,12 +997,14 @@ PAGE_TEMPLATE = """
                                         <td class="proxy-address">{{ proxy.ip }}:{{ proxy.port }}</td>
                                         <td><span class="badge text-bg-danger">{{ health_level(proxy.success_rate) }}</span></td>
                                         <td>{{ proxy.consecutive_failures }} 次</td>
+                                        <td>{{ proxy.last_detected_proxy_type or proxy.detected_proxy_type or "-" }}</td>
+                                        <td>{{ proxy.last_protocol_status or proxy.protocol_status or "-" }}</td>
                                         <td><div class="cell-compact" title="{{ proxy.last_failure_reason or proxy.failure_reason or '-' }}">{{ proxy.last_failure_reason or proxy.failure_reason or "-" }}</div></td>
                                         <td>{{ proxy.last_checked_at or "-" }}</td>
                                     </tr>
                                 {% else %}
                                     <tr>
-                                        <td colspan="5" class="text-center text-secondary py-3">暂无自动隔离的失效代理</td>
+                                        <td colspan="7" class="text-center text-secondary py-3">暂无自动隔离的失效代理</td>
                                     </tr>
                                 {% endfor %}
                             </tbody>
@@ -959,6 +1026,8 @@ PAGE_TEMPLATE = """
                                     <th class="history-time">&#26816;&#27979;&#26102;&#38388;</th>
                                     <th class="cell-medium">&#20195;&#29702;</th>
                                     <th class="history-status">&#29366;&#24577;</th>
+                                    <th class="cell-protocol">识别协议</th>
+                                    <th class="cell-protocol">协议诊断</th>
                                     <th class="cell-small">&#22269;&#23478;</th>
                                     <th class="cell-small">&#24030;</th>
                                     <th class="cell-small">&#22478;&#24066;</th>
@@ -977,6 +1046,8 @@ PAGE_TEMPLATE = """
                                                 <span class="badge text-bg-danger">&#19981;&#21487;&#36830;&#25509;</span>
                                             {% endif %}
                                         </td>
+                                        <td>{{ check.detected_proxy_type or "-" }}</td>
+                                        <td>{{ check.protocol_status or "-" }}</td>
                                         <td><div class="cell-compact" title="{{ check.country|replace('Unknown', '未知') }}">{{ check.country|replace('Unknown', '未知') }}</div></td>
                                         <td><div class="cell-compact" title="{{ check.state|replace('Unknown', '未知') }}">{{ check.state|replace('Unknown', '未知') }}</div></td>
                                         <td><div class="cell-compact" title="{{ check.city|replace('Unknown', '未知') }}">{{ check.city|replace('Unknown', '未知') }}</div></td>
@@ -984,7 +1055,7 @@ PAGE_TEMPLATE = """
                                     </tr>
                                 {% else %}
                                     <tr>
-                                        <td colspan="7" class="text-center text-secondary py-5">
+                                        <td colspan="9" class="text-center text-secondary py-5">
                                             &#36824;&#27809;&#26377;&#26816;&#27979;&#35760;&#24405;&#12290;
                                         </td>
                                     </tr>
@@ -1454,6 +1525,9 @@ def init_db() -> None:
                 ip TEXT NOT NULL,
                 port INTEGER NOT NULL,
                 proxy_type TEXT NOT NULL DEFAULT 'HTTP',
+                detected_proxy_type TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT '',
+                password TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'unknown',
                 score INTEGER NOT NULL DEFAULT 100,
                 consecutive_failures INTEGER NOT NULL DEFAULT 0,
@@ -1464,6 +1538,7 @@ def init_db() -> None:
                 isp TEXT NOT NULL DEFAULT '',
                 asn TEXT NOT NULL DEFAULT '',
                 failure_reason TEXT NOT NULL DEFAULT '',
+                protocol_status TEXT NOT NULL DEFAULT '',
                 provider_id INTEGER,
                 label TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
@@ -1493,6 +1568,8 @@ def init_db() -> None:
                 isp TEXT NOT NULL DEFAULT '',
                 asn TEXT NOT NULL DEFAULT '',
                 failure_reason TEXT NOT NULL DEFAULT '',
+                detected_proxy_type TEXT NOT NULL DEFAULT '',
+                protocol_status TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY(proxy_id) REFERENCES proxies(id) ON DELETE CASCADE
             );
 
@@ -1564,6 +1641,9 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE proxies ADD COLUMN proxy_type TEXT NOT NULL DEFAULT 'HTTP'")
     proxy_column_defaults = {
         "status": "TEXT NOT NULL DEFAULT 'unknown'",
+        "detected_proxy_type": "TEXT NOT NULL DEFAULT ''",
+        "username": "TEXT NOT NULL DEFAULT ''",
+        "password": "TEXT NOT NULL DEFAULT ''",
         "score": "INTEGER NOT NULL DEFAULT 100",
         "consecutive_failures": "INTEGER NOT NULL DEFAULT 0",
         "success_count": "INTEGER NOT NULL DEFAULT 0",
@@ -1573,6 +1653,7 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "isp": "TEXT NOT NULL DEFAULT ''",
         "asn": "TEXT NOT NULL DEFAULT ''",
         "failure_reason": "TEXT NOT NULL DEFAULT ''",
+        "protocol_status": "TEXT NOT NULL DEFAULT ''",
         "provider_id": "INTEGER",
     }
     for column, definition in proxy_column_defaults.items():
@@ -1588,6 +1669,8 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "isp": "TEXT NOT NULL DEFAULT ''",
         "asn": "TEXT NOT NULL DEFAULT ''",
         "failure_reason": "TEXT NOT NULL DEFAULT ''",
+        "detected_proxy_type": "TEXT NOT NULL DEFAULT ''",
+        "protocol_status": "TEXT NOT NULL DEFAULT ''",
     }
     for column, definition in check_column_defaults.items():
         if column not in check_columns:
@@ -1775,16 +1858,94 @@ def validate_proxy(ip: str, port_text: str) -> tuple[int | None, str | None]:
     return port, None
 
 
-def proxy_url(proxy: sqlite3.Row) -> str:
-    scheme = proxy["proxy_type"].lower()
+def proxy_url(proxy: sqlite3.Row, proxy_type: str | None = None) -> str:
+    scheme = (proxy_type or proxy["proxy_type"]).lower()
     if scheme == "socks5":
         scheme = "socks5h"
-    return f"{scheme}://{proxy['ip']}:{proxy['port']}"
+    username = proxy["username"] if "username" in proxy.keys() else ""
+    password = proxy["password"] if "password" in proxy.keys() else ""
+    auth = ""
+    if username or password:
+        auth = f"{quote(username, safe='')}:{quote(password, safe='')}@"
+    return f"{scheme}://{auth}{proxy['ip']}:{proxy['port']}"
 
 
-def proxy_requests_config(proxy: sqlite3.Row) -> dict[str, str]:
-    url = proxy_url(proxy)
+def proxy_requests_config(proxy: sqlite3.Row, proxy_type: str | None = None) -> dict[str, str]:
+    url = proxy_url(proxy, proxy_type)
     return {"http": url, "https": url}
+
+
+def ordered_proxy_types(preferred: str) -> list[str]:
+    preferred = normalize_proxy_type(preferred)
+    return [preferred] + [proxy_type for proxy_type in PROXY_TYPES if proxy_type != preferred]
+
+
+def tcp_port_status(ip: str, port: int) -> tuple[bool, str]:
+    try:
+        with socket.create_connection((ip, port), timeout=CONNECT_TIMEOUT_SECONDS):
+            return True, "端口开放"
+    except socket.timeout:
+        return False, "超时"
+    except ConnectionRefusedError:
+        return False, "无代理服务"
+    except OSError as exc:
+        text = str(exc).lower()
+        if "timed out" in text or "timeout" in text:
+            return False, "超时"
+        if "reset" in text or "10054" in text:
+            return False, "连接重置"
+        return False, "无代理服务"
+
+
+def protocol_status_from_error(error: BaseException | str, response: requests.Response | None = None) -> str:
+    status_code = response.status_code if response is not None else None
+    if status_code == 407 or status_code == 401:
+        return "认证失败"
+    text = str(error).lower()
+    if "407" in text or "proxy authentication" in text or "authentication" in text:
+        return "认证失败"
+    if isinstance(error, (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.Timeout)):
+        return "超时"
+    if "timed out" in text or "timeout" in text:
+        return "超时"
+    if "connection reset" in text or "connectionreseterror" in text or "10054" in text or "remote end closed" in text:
+        return "连接重置"
+    if "connection refused" in text or "10061" in text:
+        return "无代理服务"
+    if isinstance(error, requests.exceptions.ProxyError):
+        return "协议错误"
+    if isinstance(error, requests.exceptions.SSLError) or isinstance(error, ssl.SSLError):
+        return "协议错误"
+    if status_code and status_code >= 400:
+        return "协议错误"
+    return "协议错误"
+
+
+def choose_protocol_status(statuses: list[str], port_status: str) -> str:
+    if port_status != "端口开放":
+        return port_status
+    for status in ("认证失败", "超时", "连接重置", "协议错误", "无代理服务"):
+        if status in statuses:
+            return status
+    return "协议错误"
+
+
+def auth_status(proxy: sqlite3.Row | dict[str, object]) -> str:
+    username = proxy["username"] if "username" in proxy.keys() else ""
+    password = proxy["password"] if "password" in proxy.keys() else ""
+    if not username and not password:
+        return "无认证"
+    protocol_status = ""
+    if "last_protocol_status" in proxy.keys() and proxy["last_protocol_status"]:
+        protocol_status = str(proxy["last_protocol_status"])
+    elif "protocol_status" in proxy.keys() and proxy["protocol_status"]:
+        protocol_status = str(proxy["protocol_status"])
+    last_connectable = proxy["last_connectable"] if "last_connectable" in proxy.keys() else None
+    if protocol_status == "认证失败":
+        return "认证失败"
+    if last_connectable == 1:
+        return "认证通过"
+    return "已配置"
 
 
 def query_exit_location(exit_ip: str) -> dict[str, str]:
@@ -1884,46 +2045,14 @@ def recommend_score(proxy: sqlite3.Row | dict[str, object]) -> float:
 
 
 def verify_proxy(proxy: sqlite3.Row) -> dict[str, object]:
-    started_at = datetime.now()
-    try:
-        response = requests.get(
-            IPIFY_URL,
-            proxies=proxy_requests_config(proxy),
-            timeout=CONNECT_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        exit_ip = response.json().get("ip", "")
-        if not exit_ip:
-            return {
-                "connectable": False,
-                "message": "ipify response did not include ip",
-                "failure_reason": "出口IP获取失败",
-                "exit_ip": "",
-                "latency_ms": None,
-                "country": UNKNOWN,
-                "state": UNKNOWN,
-                "city": UNKNOWN,
-                "isp": UNKNOWN,
-                "asn": UNKNOWN,
-            }
-    except requests.exceptions.HTTPError as exc:
+    port_open, initial_protocol_status = tcp_port_status(proxy["ip"], proxy["port"])
+    if not port_open:
         return {
             "connectable": False,
-            "message": str(exc),
-            "failure_reason": classify_failure(exc, exc.response),
-            "exit_ip": "",
-            "latency_ms": None,
-            "country": UNKNOWN,
-            "state": UNKNOWN,
-            "city": UNKNOWN,
-            "isp": UNKNOWN,
-            "asn": UNKNOWN,
-        }
-    except (requests.RequestException, ValueError) as exc:
-        return {
-            "connectable": False,
-            "message": str(exc),
-            "failure_reason": classify_failure(exc),
+            "message": initial_protocol_status,
+            "failure_reason": initial_protocol_status,
+            "detected_proxy_type": "",
+            "protocol_status": initial_protocol_status,
             "exit_ip": "",
             "latency_ms": None,
             "country": UNKNOWN,
@@ -1933,25 +2062,82 @@ def verify_proxy(proxy: sqlite3.Row) -> dict[str, object]:
             "asn": UNKNOWN,
         }
 
-    latency_ms = int((datetime.now() - started_at).total_seconds() * 1000)
-    location = query_exit_location(exit_ip)
-    message = "proxy verified"
-    failure_reason = ""
-    if location["error"]:
-        message = f"proxy verified; location: {location['error']}"
-        failure_reason = "地理位置查询失败"
+    errors: list[str] = []
+    protocol_statuses: list[str] = []
+    for candidate_type in ordered_proxy_types(proxy["proxy_type"]):
+        started_at = datetime.now()
+        try:
+            response = requests.get(
+                IPIFY_URL,
+                proxies=proxy_requests_config(proxy, candidate_type),
+                timeout=CONNECT_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            exit_ip = response.json().get("ip", "")
+            if not exit_ip:
+                return {
+                    "connectable": False,
+                    "message": "ipify response did not include ip",
+                    "failure_reason": "出口IP获取失败",
+                    "detected_proxy_type": candidate_type,
+                    "protocol_status": "协议错误",
+                    "exit_ip": "",
+                    "latency_ms": None,
+                    "country": UNKNOWN,
+                    "state": UNKNOWN,
+                    "city": UNKNOWN,
+                    "isp": UNKNOWN,
+                    "asn": UNKNOWN,
+                }
+        except requests.exceptions.HTTPError as exc:
+            status = protocol_status_from_error(exc, exc.response)
+            protocol_statuses.append(status)
+            errors.append(f"{candidate_type}: {exc}")
+            continue
+        except (requests.RequestException, ValueError) as exc:
+            status = protocol_status_from_error(exc)
+            protocol_statuses.append(status)
+            errors.append(f"{candidate_type}: {exc}")
+            continue
 
+        latency_ms = int((datetime.now() - started_at).total_seconds() * 1000)
+        location = query_exit_location(exit_ip)
+        message = f"proxy verified as {candidate_type}"
+        failure_reason = ""
+        protocol_status = "端口开放"
+        if location["error"]:
+            message = f"proxy verified as {candidate_type}; location: {location['error']}"
+            failure_reason = "地理位置查询失败"
+
+        return {
+            "connectable": True,
+            "message": message,
+            "failure_reason": failure_reason,
+            "detected_proxy_type": candidate_type,
+            "protocol_status": protocol_status,
+            "exit_ip": exit_ip,
+            "latency_ms": latency_ms,
+            "country": location["country"],
+            "state": location["state"],
+            "city": location["city"],
+            "isp": location["isp"],
+            "asn": location["asn"],
+        }
+
+    protocol_status = choose_protocol_status(protocol_statuses, initial_protocol_status)
     return {
-        "connectable": True,
-        "message": message,
-        "failure_reason": failure_reason,
-        "exit_ip": exit_ip,
-        "latency_ms": latency_ms,
-        "country": location["country"],
-        "state": location["state"],
-        "city": location["city"],
-        "isp": location["isp"],
-        "asn": location["asn"],
+        "connectable": False,
+        "message": "; ".join(errors) or protocol_status,
+        "failure_reason": protocol_status,
+        "detected_proxy_type": "",
+        "protocol_status": protocol_status,
+        "exit_ip": "",
+        "latency_ms": None,
+        "country": UNKNOWN,
+        "state": UNKNOWN,
+        "city": UNKNOWN,
+        "isp": UNKNOWN,
+        "asn": UNKNOWN,
     }
 
 
@@ -1981,13 +2167,15 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
     connectable = bool(result["connectable"])
     message = str(result["message"])
     failure_reason = str(result.get("failure_reason") or "")
+    detected_proxy_type = str(result.get("detected_proxy_type") or "")
+    protocol_status = str(result.get("protocol_status") or "")
 
     checked_at = current_time()
     db.execute(
         """
         INSERT INTO checks
-            (proxy_id, checked_at, connectable, message, country, state, city, exit_ip, latency_ms, isp, asn, failure_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (proxy_id, checked_at, connectable, message, country, state, city, exit_ip, latency_ms, isp, asn, failure_reason, detected_proxy_type, protocol_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             proxy["id"],
@@ -2002,6 +2190,8 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
             result["isp"],
             result["asn"],
             failure_reason,
+            detected_proxy_type,
+            protocol_status,
         ),
     )
     if connectable:
@@ -2011,6 +2201,8 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
             """
             UPDATE proxies
             SET
+                proxy_type = ?,
+                detected_proxy_type = ?,
                 status = ?,
                 score = ?,
                 consecutive_failures = 0,
@@ -2020,16 +2212,20 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
                 isp = ?,
                 asn = ?,
                 failure_reason = '',
+                protocol_status = ?,
                 updated_at = ?
             WHERE id = ?
             """,
             (
+                detected_proxy_type or proxy["proxy_type"],
+                detected_proxy_type,
                 new_status,
                 new_score,
                 result["exit_ip"],
                 result["latency_ms"],
                 result["isp"],
                 result["asn"],
+                protocol_status,
                 checked_at,
                 proxy["id"],
             ),
@@ -2049,10 +2245,11 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
                 consecutive_failures = ?,
                 failure_count = failure_count + 1,
                 failure_reason = ?,
+                protocol_status = ?,
                 updated_at = ?
             WHERE id = ?
             """,
-            (new_status, new_score, consecutive_failures, failure_reason, checked_at, proxy["id"]),
+            (new_status, new_score, consecutive_failures, failure_reason, protocol_status, checked_at, proxy["id"]),
         )
     db.commit()
     return proxy
@@ -2126,6 +2323,8 @@ def fetch_proxies(
             c.isp AS last_isp,
             c.asn AS last_asn,
             c.failure_reason AS last_failure_reason,
+            c.detected_proxy_type AS last_detected_proxy_type,
+            c.protocol_status AS last_protocol_status,
             CASE
                 WHEN (p.success_count + p.failure_count) = 0 THEN 0
                 ELSE ROUND((p.success_count * 100.0) / (p.success_count + p.failure_count), 1)
@@ -2442,6 +2641,10 @@ def serialize_proxy(proxy: sqlite3.Row) -> dict[str, object]:
         "ip": proxy["ip"],
         "port": proxy["port"],
         "proxy_type": proxy["proxy_type"],
+        "detected_proxy_type": proxy["detected_proxy_type"] if "detected_proxy_type" in proxy.keys() else "",
+        "protocol_status": proxy["protocol_status"] if "protocol_status" in proxy.keys() else "",
+        "auth_enabled": bool(proxy["username"] if "username" in proxy.keys() else ""),
+        "auth_status": auth_status(proxy),
         "provider": proxy["provider_name"] if "provider_name" in proxy.keys() else "",
         "country": proxy["country"] or UNKNOWN,
         "state": proxy["state"] or UNKNOWN,
@@ -2556,6 +2759,8 @@ def fetch_online_proxies(
             p.ip,
             p.port,
             p.proxy_type,
+            p.username,
+            p.password,
             sp.name AS provider_name,
             p.score,
             p.latency_ms,
@@ -2571,6 +2776,8 @@ def fetch_online_proxies(
             c.isp AS check_isp,
             c.asn AS check_asn,
             c.failure_reason,
+            c.detected_proxy_type,
+            c.protocol_status,
             c.checked_at AS last_checked_at,
             CASE
                 WHEN (p.success_count + p.failure_count) = 0 THEN 0
@@ -2685,12 +2892,19 @@ def provider_stats() -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def parse_proxy_line(line: str) -> tuple[str, str, str, str] | None:
+def parse_proxy_line(line: str) -> tuple[str, str, str, str, str, str] | None:
     cleaned = line.strip()
     if not cleaned or cleaned.startswith("#"):
         return None
 
     label = ""
+    username = ""
+    password = ""
+    colon_parts = cleaned.split(":")
+    if len(colon_parts) == 4 and " " not in cleaned and "," not in cleaned:
+        ip, port_text, username, password = [part.strip() for part in colon_parts]
+        return ip, port_text, "SOCKS5", label, username, password
+
     if "," in cleaned:
         parts = [part.strip() for part in cleaned.split(",", 3)]
         if len(parts) >= 2:
@@ -2700,11 +2914,11 @@ def parse_proxy_line(line: str) -> tuple[str, str, str, str] | None:
             if len(parts) == 3 and parts[2].upper() not in PROXY_TYPES:
                 proxy_type = "HTTP"
                 label = parts[2]
-            return ip, port_text, proxy_type, label
+            return ip, port_text, proxy_type, label, username, password
 
     if ":" in cleaned and " " not in cleaned:
         ip, port_text = cleaned.rsplit(":", 1)
-        return ip.strip(), port_text.strip(), "HTTP", label
+        return ip.strip(), port_text.strip(), "HTTP", label, username, password
 
     parts = cleaned.split(maxsplit=3)
     if len(parts) >= 2:
@@ -2714,7 +2928,7 @@ def parse_proxy_line(line: str) -> tuple[str, str, str, str] | None:
         if len(parts) == 3 and parts[2].upper() not in PROXY_TYPES:
             proxy_type = "HTTP"
             label = parts[2]
-        return ip, port_text, proxy_type, label
+        return ip, port_text, proxy_type, label, username, password
 
     return None
 
@@ -2725,7 +2939,7 @@ def normalize_proxy_type(value: str) -> str:
 
 
 def insert_proxy(ip: str, port: int, proxy_type: str, label: str) -> bool:
-    return insert_proxy_with_provider(ip, port, proxy_type, label, 1)
+    return insert_proxy_with_provider(ip, port, proxy_type, label, 1, "", "")
 
 
 def insert_proxy_with_provider(
@@ -2734,15 +2948,27 @@ def insert_proxy_with_provider(
     proxy_type: str,
     label: str,
     provider_id: int,
+    username: str = "",
+    password: str = "",
 ) -> bool:
     now = current_time()
     try:
         get_db().execute(
             """
-            INSERT INTO proxies (ip, port, proxy_type, provider_id, label, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO proxies (ip, port, proxy_type, provider_id, username, password, label, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (ip, port, normalize_proxy_type(proxy_type), provider_id, label, now, now),
+            (
+                ip,
+                port,
+                normalize_proxy_type(proxy_type),
+                provider_id,
+                username.strip(),
+                password,
+                label,
+                now,
+                now,
+            ),
         )
         get_db().commit()
         return True
@@ -2781,6 +3007,7 @@ def index():
     proxy_check_map = fetch_proxy_check_history([proxy["id"] for proxy in proxies])
     return render_template_string(
         PAGE_TEMPLATE,
+        auth_status=auth_status,
         failure_reasons=FAILURE_REASONS,
         failure_summary_reasons=FAILURE_REASON_SUMMARY,
         health_level=health_level,
@@ -3017,6 +3244,8 @@ def create_proxy():
     ip = request.form.get("ip", "").strip()
     port_text = request.form.get("port", "").strip()
     label = request.form.get("label", "").strip()
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
     proxy_type = normalize_proxy_type(request.form.get("proxy_type", "HTTP"))
     provider_id = valid_provider_id(request.form.get("provider_id", "1"))
     port, error = validate_proxy(ip, port_text)
@@ -3025,7 +3254,7 @@ def create_proxy():
         flash(error)
         return redirect(url_for("index"))
 
-    if insert_proxy_with_provider(ip, port, proxy_type, label, provider_id):
+    if insert_proxy_with_provider(ip, port, proxy_type, label, provider_id, username, password):
         flash(f"\u5df2\u6dfb\u52a0\u4ee3\u7406 {ip}:{port}\u3002")
     else:
         flash(f"\u4ee3\u7406 {ip}:{port} \u5df2\u5b58\u5728\u3002")
@@ -3051,13 +3280,13 @@ def import_proxies():
                 invalid += 1
             continue
 
-        ip, port_text, proxy_type, label = parsed
+        ip, port_text, proxy_type, label, username, password = parsed
         port, error = validate_proxy(ip, port_text)
         if error or port is None:
             invalid += 1
             continue
 
-        if insert_proxy_with_provider(ip, port, proxy_type, label, provider_id):
+        if insert_proxy_with_provider(ip, port, proxy_type, label, provider_id, username, password):
             added += 1
         else:
             skipped += 1
@@ -3148,6 +3377,11 @@ def export_csv():
             "ip",
             "port",
             "proxy_type",
+            "detected_proxy_type",
+            "protocol_status",
+            "auth_enabled",
+            "auth_status",
+            "username",
             "provider",
             "label",
             "last_checked_at",
@@ -3172,6 +3406,11 @@ def export_csv():
                 proxy["ip"],
                 proxy["port"],
                 proxy["proxy_type"],
+                proxy["last_detected_proxy_type"] or proxy["detected_proxy_type"] or "",
+                proxy["last_protocol_status"] or proxy["protocol_status"] or "",
+                1 if proxy["username"] else 0,
+                auth_status(proxy),
+                proxy["username"] or "",
                 proxy["provider_name"] or "",
                 proxy["label"],
                 proxy["last_checked_at"] or "",
