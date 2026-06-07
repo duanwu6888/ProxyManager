@@ -255,6 +255,35 @@ PAGE_TEMPLATE = """
             min-height: 100%;
         }
 
+        .compact-dashboard-card {
+            min-height: 112px;
+        }
+
+        .compact-dashboard-card .card-body {
+            padding: 0.65rem 0.85rem;
+        }
+
+        .compact-dashboard-card .card-header {
+            padding-bottom: 0.45rem;
+            padding-top: 0.45rem;
+        }
+
+        .compact-metric {
+            font-size: 1.75rem;
+            line-height: 1.1;
+        }
+
+        .scheduler-compact-form {
+            align-items: end;
+            display: grid;
+            gap: 0.75rem;
+            grid-template-columns: minmax(120px, 1fr) minmax(96px, 0.75fr) auto auto;
+        }
+
+        .scheduler-switch {
+            min-height: 38px;
+        }
+
         @media (max-width: 575.98px) {
             main.container-fluid {
                 padding-left: 0.75rem !important;
@@ -277,6 +306,14 @@ PAGE_TEMPLATE = """
 
             .stat-card {
                 min-height: 92px;
+            }
+
+            .compact-dashboard-card {
+                min-height: auto;
+            }
+
+            .scheduler-compact-form {
+                grid-template-columns: 1fr;
             }
 
             .display-6 {
@@ -430,51 +467,52 @@ PAGE_TEMPLATE = """
                 </div>
             </div>
             <div class="col-12 col-xl-4">
-                <div class="card dashboard-card border-0 shadow-sm">
+                <div class="card compact-dashboard-card border-0 shadow-sm">
                     <div class="card-header bg-white fw-semibold">自动检测</div>
                     <div class="card-body">
-                        <form action="{{ url_for('update_scheduler') }}" method="post" class="vstack gap-2">
-                        <label for="schedule_interval" class="form-label">检测间隔</label>
-                            <select id="schedule_interval" name="interval_seconds" class="form-select">
-                                <option value="300" {% if scheduler_config.interval_seconds == 300 %}selected{% endif %}>5 minutes</option>
-                                <option value="1800" {% if scheduler_config.interval_seconds == 1800 %}selected{% endif %}>30 minutes</option>
-                                <option value="3600" {% if scheduler_config.interval_seconds == 3600 %}selected{% endif %}>1 hour</option>
-                                <option value="21600" {% if scheduler_config.interval_seconds == 21600 %}selected{% endif %}>6 hours</option>
-                                <option value="custom">Custom</option>
-                            </select>
-                            <input
-                                name="custom_interval_seconds"
-                                class="form-control"
-                                inputmode="numeric"
-                                placeholder="Custom seconds, minimum 60"
-                            >
-                            <div class="form-check">
-                                <input id="schedule_enabled" name="enabled" value="1" type="checkbox" class="form-check-input" {% if scheduler_config.enabled %}checked{% endif %}>
-                                <label for="schedule_enabled" class="form-check-label">Enable background scheduler</label>
+                        <form action="{{ url_for('update_scheduler') }}" method="post" class="scheduler-compact-form">
+                            <div>
+                                <label for="schedule_interval" class="form-label small mb-1">检测间隔</label>
+                                <select id="schedule_interval" name="interval_seconds" class="form-select form-select-sm">
+                                    <option value="300" {% if scheduler_config.interval_seconds == 300 %}selected{% endif %}>5 minutes</option>
+                                    <option value="1800" {% if scheduler_config.interval_seconds == 1800 %}selected{% endif %}>30 minutes</option>
+                                    <option value="3600" {% if scheduler_config.interval_seconds == 3600 %}selected{% endif %}>1 hour</option>
+                                    <option value="21600" {% if scheduler_config.interval_seconds == 21600 %}selected{% endif %}>6 hours</option>
+                                    <option value="custom">Custom</option>
+                                </select>
                             </div>
-                            <button type="submit" class="btn btn-primary mobile-full">保存调度</button>
+                            <div>
+                                <label class="form-label small mb-1">自定义秒数</label>
+                                <input
+                                    name="custom_interval_seconds"
+                                    class="form-control form-control-sm"
+                                    inputmode="numeric"
+                                    placeholder=">= 60"
+                                >
+                            </div>
+                            <div class="form-check form-switch scheduler-switch d-flex align-items-center">
+                                <input id="schedule_enabled" name="enabled" value="1" type="checkbox" class="form-check-input me-2" {% if scheduler_config.enabled %}checked{% endif %}>
+                                <label for="schedule_enabled" class="form-check-label small">开启</label>
+                            </div>
+                            <button type="submit" class="btn btn-sm btn-primary mobile-full">保存</button>
                         </form>
-                        <div class="form-text mt-2">
-                            当前：{% if scheduler_config.enabled %}已启用{% else %}未启用{% endif %}，
-                            每 {{ scheduler_config.interval_seconds }} 秒执行一次。
-                        </div>
                     </div>
                 </div>
             </div>
             <div class="col-12 col-xl-4">
-                <div class="card dashboard-card border-0 shadow-sm">
+                <div class="card compact-dashboard-card border-0 shadow-sm">
                     <div class="card-header bg-white fw-semibold">在线率</div>
-                    <div class="card-body">
-                        <div class="display-6 fw-semibold text-primary">{{ dashboard.online_rate }}%</div>
+                    <div class="card-body d-flex flex-column justify-content-center">
+                        <div class="compact-metric fw-semibold text-primary">{{ dashboard.online_rate }}%</div>
                         <div class="text-secondary small">{{ stats.online }} / {{ stats.total }} 个在线</div>
                     </div>
                 </div>
             </div>
             <div class="col-12 col-xl-4">
-                <div class="card dashboard-card border-0 shadow-sm">
+                <div class="card compact-dashboard-card border-0 shadow-sm">
                     <div class="card-header bg-white fw-semibold">Latest Check</div>
-                    <div class="card-body">
-                        <div class="h5 mb-1">{{ dashboard.last_checked_at or "-" }}</div>
+                    <div class="card-body d-flex flex-column justify-content-center">
+                        <div class="h6 mb-1">{{ dashboard.last_checked_at or "-" }}</div>
                         <div class="text-secondary small">最近一条检测记录</div>
                     </div>
                 </div>
