@@ -204,6 +204,10 @@ PAGE_TEMPLATE = """
             width: 128px;
         }
 
+        .cell-expiry {
+            width: 180px;
+        }
+
         .cell-proxy {
             width: 170px;
         }
@@ -855,7 +859,7 @@ PAGE_TEMPLATE = """
                                     <th class="cell-small">延迟</th>
                                     <th class="cell-provider">&#22791;&#27880;</th>
                                     <th class="cell-customer">客户</th>
-                                    <th class="cell-medium">到期时间</th>
+                                    <th class="cell-expiry">到期时间</th>
                                     <th class="cell-small">剩余天数</th>
                                     <th class="cell-small">有效状态</th>
                                     <th class="cell-small">最近结果</th>
@@ -910,21 +914,21 @@ PAGE_TEMPLATE = """
                                             </select>
                                         </td>
                                         <td>
-                                            <input form="proxy-settings-{{ proxy.id }}" name="expires_at" class="form-control form-control-sm" value="{{ proxy.expires_at or '' }}" placeholder="YYYY-MM-DD HH:mm:ss">
+                                            <div class="d-flex align-items-center gap-1">
+                                                <input form="proxy-settings-{{ proxy.id }}" name="expires_at" class="form-control form-control-sm" value="{{ proxy.expires_at or '' }}" placeholder="YYYY-MM-DD HH:mm:ss">
+                                                <button form="proxy-settings-{{ proxy.id }}" class="btn btn-sm btn-outline-primary" type="submit">保存</button>
+                                            </div>
                                         </td>
                                         <td>{{ proxy_remaining_days(proxy.expires_at) }}</td>
                                         <td>
-                                            <div class="d-flex align-items-center gap-2">
-                                                {% set expiry_status = proxy_expiry_status(proxy) %}
-                                                {% if expiry_status == '已过期' %}
-                                                    <span class="badge text-bg-danger">{{ expiry_status }}</span>
-                                                {% elif expiry_status == '即将到期' %}
-                                                    <span class="badge text-bg-warning">{{ expiry_status }}</span>
-                                                {% else %}
-                                                    <span class="badge text-bg-success">{{ expiry_status }}</span>
-                                                {% endif %}
-                                                <button form="proxy-settings-{{ proxy.id }}" class="btn btn-sm btn-outline-primary" type="submit">保存</button>
-                                            </div>
+                                            {% set expiry_status = proxy_expiry_status(proxy) %}
+                                            {% if expiry_status == '已过期' %}
+                                                <span class="badge text-bg-danger">{{ expiry_status }}</span>
+                                            {% elif expiry_status == '即将到期' %}
+                                                <span class="badge text-bg-warning">{{ expiry_status }}</span>
+                                            {% else %}
+                                                <span class="badge text-bg-success">{{ expiry_status }}</span>
+                                            {% endif %}
                                         </td>
                                         <td>
                                             {% if proxy.last_connectable is none %}
