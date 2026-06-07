@@ -1191,7 +1191,7 @@ NODES_TEMPLATE = """
     <style>
         body { background: #f4f6f9; }
         .table td, .table th { vertical-align: middle; }
-        .node-table { min-width: 1740px; table-layout: fixed; font-size: 0.84rem; }
+        .node-table { min-width: 1920px; table-layout: fixed; font-size: 0.84rem; }
         .cell-compact { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .cell-name { width: 170px; }
         .cell-small { width: 90px; }
@@ -1201,7 +1201,7 @@ NODES_TEMPLATE = """
         @media (max-width: 575.98px) {
             main.container-fluid { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
             .mobile-full { width: 100%; }
-            .node-table { min-width: 1520px; font-size: 0.76rem; }
+            .node-table { min-width: 1700px; font-size: 0.76rem; }
         }
     </style>
 </head>
@@ -1236,6 +1236,15 @@ NODES_TEMPLATE = """
             <div class="card-header bg-white fw-semibold">批量导入 VLESS 节点</div>
             <div class="card-body">
                 <form action="{{ url_for('import_nodes') }}" method="post" class="vstack gap-3">
+                    <div>
+                        <label for="node_customer_id" class="form-label">分配客户</label>
+                        <select id="node_customer_id" name="customer_id" class="form-select">
+                            <option value="">未分配</option>
+                            {% for customer in customers %}
+                                <option value="{{ customer.id }}">{{ customer.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
                     <textarea
                         name="nodes"
                         class="form-control node-url"
@@ -1262,6 +1271,7 @@ NODES_TEMPLATE = """
                     <thead class="table-light">
                         <tr>
                             <th class="cell-name">名称</th>
+                            <th class="cell-medium">客户</th>
                             <th class="cell-small">协议</th>
                             <th class="cell-medium">服务器 IP</th>
                             <th class="cell-small">端口</th>
@@ -1283,6 +1293,17 @@ NODES_TEMPLATE = """
                         {% for node in nodes %}
                             <tr>
                                 <td><div class="cell-compact" title="{{ node.name or '-' }}">{{ node.name or "-" }}</div></td>
+                                <td>
+                                    <form action="{{ url_for('assign_node_customer', node_id=node.id) }}" method="post" class="d-flex gap-1">
+                                        <select name="customer_id" class="form-select form-select-sm">
+                                            <option value="">未分配</option>
+                                            {% for customer in customers %}
+                                                <option value="{{ customer.id }}" {% if node.customer_id == customer.id %}selected{% endif %}>{{ customer.name }}</option>
+                                            {% endfor %}
+                                        </select>
+                                        <button class="btn btn-sm btn-outline-primary" type="submit">保存</button>
+                                    </form>
+                                </td>
                                 <td><span class="badge text-bg-dark">{{ node.protocol or "-" }}</span></td>
                                 <td><div class="cell-compact" title="{{ node.server_ip or '-' }}">{{ node.server_ip or "-" }}</div></td>
                                 <td>{{ node.server_port or "-" }}</td>
@@ -1311,7 +1332,7 @@ NODES_TEMPLATE = """
                             </tr>
                         {% else %}
                             <tr>
-                                <td colspan="16" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
+                                <td colspan="17" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
                             </tr>
                         {% endfor %}
                     </tbody>
@@ -2101,6 +2122,7 @@ def init_db() -> None:
                 exit_city TEXT NOT NULL DEFAULT 'Unknown',
                 exit_isp TEXT NOT NULL DEFAULT 'Unknown',
                 exit_asn TEXT NOT NULL DEFAULT 'Unknown',
+                customer_id INTEGER,
                 latency_ms INTEGER,
                 real_status TEXT NOT NULL DEFAULT '',
                 real_latency_ms INTEGER,
@@ -2317,6 +2339,7 @@ def ensure_schema(db: sqlite3.Connection) -> None:
             exit_city TEXT NOT NULL DEFAULT 'Unknown',
             exit_isp TEXT NOT NULL DEFAULT 'Unknown',
             exit_asn TEXT NOT NULL DEFAULT 'Unknown',
+            customer_id INTEGER,
             latency_ms INTEGER,
             real_status TEXT NOT NULL DEFAULT '',
             real_latency_ms INTEGER,
@@ -2337,6 +2360,7 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "exit_city": "TEXT NOT NULL DEFAULT 'Unknown'",
         "exit_isp": "TEXT NOT NULL DEFAULT 'Unknown'",
         "exit_asn": "TEXT NOT NULL DEFAULT 'Unknown'",
+        "customer_id": "INTEGER",
         "real_status": "TEXT NOT NULL DEFAULT ''",
         "real_latency_ms": "INTEGER",
         "check_message": "TEXT NOT NULL DEFAULT ''",
@@ -3995,9 +4019,10 @@ def provider_stats() -> list[sqlite3.Row]:
 def fetch_nodes() -> list[sqlite3.Row]:
     return get_db().execute(
         """
-        SELECT *
-        FROM nodes
-        ORDER BY created_at DESC, id DESC
+        SELECT n.*, c.name AS customer_name
+        FROM nodes n
+        LEFT JOIN customers c ON c.id = n.customer_id
+        ORDER BY n.created_at DESC, n.id DESC
         """
     ).fetchall()
 
@@ -4011,10 +4036,10 @@ def insert_node(parsed_node: dict[str, object]) -> bool:
                 protocol, name, server_ip, server_port, uuid, security, flow,
                 pbk, sid, transport_type, sni, raw_url, status, latency_ms,
                 exit_ip, exit_country, exit_region, exit_city, exit_isp, exit_asn,
-                real_status, real_latency_ms, check_message, last_message,
+                customer_id, real_status, real_latency_ms, check_message, last_message,
                 created_at, last_checked
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 parsed_node["protocol"],
@@ -4037,6 +4062,7 @@ def insert_node(parsed_node: dict[str, object]) -> bool:
                 parsed_node.get("exit_city", UNKNOWN),
                 parsed_node.get("exit_isp", UNKNOWN),
                 parsed_node.get("exit_asn", UNKNOWN),
+                parsed_node.get("customer_id"),
                 parsed_node.get("real_status", ""),
                 parsed_node.get("real_latency_ms"),
                 parsed_node.get("check_message", ""),
@@ -4511,6 +4537,7 @@ def delete_customer(customer_id: int):
         return auth_redirect
     get_db().execute("UPDATE proxies SET customer_id = NULL WHERE customer_id = ?", (customer_id,))
     get_db().execute("UPDATE api_keys SET customer_id = NULL WHERE customer_id = ?", (customer_id,))
+    get_db().execute("UPDATE nodes SET customer_id = NULL WHERE customer_id = ?", (customer_id,))
     get_db().execute("DELETE FROM customers WHERE id = ?", (customer_id,))
     get_db().commit()
     flash("客户已删除，相关代理已变为未分配。")
@@ -4540,6 +4567,7 @@ def nodes_page():
     return render_template_string(
         NODES_TEMPLATE,
         nodes=fetch_nodes(),
+        customers=customers(False),
         node_status_badge_class=node_status_badge_class,
         display_location=display_location,
         xray_available=is_xray_available(),
@@ -4563,6 +4591,7 @@ def import_nodes():
     if auth_redirect:
         return auth_redirect
     raw_lines = request.form.get("nodes", "").splitlines()
+    customer_id = valid_customer_id(request.form.get("customer_id", "")) if request.form.get("customer_id") else None
     imported = 0
     failed = 0
     for line in raw_lines:
@@ -4570,6 +4599,7 @@ def import_nodes():
         if not raw_url:
             continue
         parsed_node = parse_vless_node_url(raw_url)
+        parsed_node["customer_id"] = customer_id
         if parsed_node["status"] != NODE_STATUS_PARSE_FAILED:
             status, latency_ms, checked_at = check_node_port(parsed_node)
             parsed_node["status"] = status
@@ -4613,6 +4643,21 @@ def check_node_route(node_id: int):
         return auth_redirect
     update_node_check(node_id)
     flash("节点检测已完成。")
+    return redirect(url_for("nodes_page"))
+
+
+@app.route("/nodes/<int:node_id>/assign-customer", methods=["POST"])
+def assign_node_customer(node_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    customer_id = valid_customer_id(request.form.get("customer_id", "")) if request.form.get("customer_id") else None
+    get_db().execute(
+        "UPDATE nodes SET customer_id = ? WHERE id = ?",
+        (customer_id, node_id),
+    )
+    get_db().commit()
+    flash("节点客户分配已更新。")
     return redirect(url_for("nodes_page"))
 
 
