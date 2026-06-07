@@ -1212,6 +1212,7 @@ NODES_TEMPLATE = """
                 <div class="text-secondary">导入和管理 VLESS / Reality 节点链接，保留 TCP 端口检测，并通过 Xray-core 验证真实出口 IP。</div>
             </div>
             <div class="d-flex flex-column flex-sm-row gap-2">
+                <a href="{{ url_for('xray_status_page') }}" class="btn btn-outline-primary mobile-full">Xray状态</a>
                 <a href="{{ url_for('index') }}" class="btn btn-outline-secondary mobile-full">返回首页</a>
             </div>
         </div>
@@ -1338,6 +1339,67 @@ NODES_TEMPLATE = """
             });
         });
     </script>
+</body>
+</html>
+"""
+
+XRAY_STATUS_TEMPLATE = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ProxyManager Xray Status</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f4f6f9; }
+        pre { white-space: pre-wrap; word-break: break-word; }
+    </style>
+</head>
+<body>
+    <main class="container py-4">
+        <div class="d-flex flex-column flex-sm-row justify-content-between gap-2 mb-4">
+            <div>
+                <h1 class="h3 mb-1">Xray状态</h1>
+                <div class="text-secondary">用于诊断 Docker 容器或本机环境是否能调用 xray-core。</div>
+            </div>
+            <a href="{{ url_for('nodes_page') }}" class="btn btn-outline-secondary align-self-sm-start">返回节点管理</a>
+        </div>
+
+        <section class="card border-0 shadow-sm">
+            <div class="card-header bg-white fw-semibold">诊断结果</div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="text-secondary small">安装状态</div>
+                        <div>
+                            {% if details.installed %}
+                                <span class="badge text-bg-success">已安装</span>
+                            {% else %}
+                                <span class="badge text-bg-danger">未安装</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-secondary small">使用路径</div>
+                        <code>{{ details.resolved_path or "-" }}</code>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-secondary small">XRAY_PATH</div>
+                        <code>{{ details.configured_path or "-" }}</code>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="text-secondary small">which xray</div>
+                        <code>{{ details.which_path or "-" }}</code>
+                    </div>
+                    <div class="col-12">
+                        <div class="text-secondary small">xray version</div>
+                        <pre class="bg-light border rounded p-3 mb-0">{{ details.version or "-" }}</pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
 </body>
 </html>
 """
@@ -2613,15 +2675,62 @@ def is_xray_available() -> bool:
     return xray_binary_path() is not None
 
 
+def xray_version_output(xray_path: str) -> str:
+    try:
+        completed = subprocess.run(
+            [xray_path, "version"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception as exc:
+        return f"版本检测失败：{exc}"
+    output = "\n".join(
+        part.strip()
+        for part in (completed.stdout, completed.stderr)
+        if part and part.strip()
+    )
+    return output or f"xray version 退出码：{completed.returncode}"
+
+
+def xray_status_details() -> dict[str, object]:
+    configured_path = os.environ.get("XRAY_PATH", "").strip()
+    which_path = shutil.which("xray") or ""
+    resolved_path = xray_binary_path() or ""
+    version = xray_version_output(resolved_path) if resolved_path else ""
+    return {
+        "installed": bool(resolved_path),
+        "configured_path": configured_path,
+        "which_path": which_path,
+        "resolved_path": resolved_path,
+        "version": version,
+    }
+
+
+def xray_diagnostic_message() -> str:
+    details = xray_status_details()
+    installed = "已安装" if details["installed"] else "未安装"
+    version_line = str(details["version"]).splitlines()[0] if details["version"] else "-"
+    return (
+        f"Xray状态：{installed}；"
+        f"XRAY_PATH={details['configured_path'] or '-'}；"
+        f"which xray={details['which_path'] or '-'}；"
+        f"使用路径={details['resolved_path'] or '-'}；"
+        f"xray version={version_line}"
+    )
+
+
 def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, object]:
     checked_at = current_time()
+    diagnostic = xray_diagnostic_message()
     if not node["server_ip"] or not node["server_port"] or not node["uuid"]:
         return {
             "real_status": NODE_STATUS_UNAVAILABLE,
             "real_latency_ms": None,
             "exit_ip": "",
             "last_checked": checked_at,
-            "check_message": "节点字段不完整，无法生成 Xray 配置。",
+            "check_message": f"{diagnostic}；节点字段不完整，无法生成 Xray 配置。",
         }
 
     xray_path = xray_binary_path()
@@ -2631,7 +2740,7 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
             "real_latency_ms": None,
             "exit_ip": "",
             "last_checked": checked_at,
-            "check_message": "请安装 xray-core 后再进行真实检测，或设置 XRAY_PATH。",
+            "check_message": f"{diagnostic}；请安装 xray-core 后再进行真实检测，或设置 XRAY_PATH。",
         }
 
     socks_port = reserve_local_port(XRAY_SOCKS_TEST_PORT)
@@ -2657,7 +2766,7 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
                     "real_latency_ms": None,
                     "exit_ip": "",
                     "last_checked": checked_at,
-                    "check_message": f"Xray SOCKS5 本地端口 127.0.0.1:{socks_port} 启动失败。{stderr}".strip(),
+                    "check_message": f"{diagnostic}；Xray SOCKS5 本地端口 127.0.0.1:{socks_port} 启动失败。{stderr}".strip(),
                 }
             response = requests.get(
                 IPIFY_URL,
@@ -2675,7 +2784,7 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
                     "real_latency_ms": None,
                     "exit_ip": "",
                     "last_checked": checked_at,
-                    "check_message": "api.ipify.org 未返回出口 IP。",
+                    "check_message": f"{diagnostic}；api.ipify.org 未返回出口 IP。",
                 }
             latency_ms = int((time.monotonic() - started_at) * 1000)
             return {
@@ -2683,7 +2792,7 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
                 "real_latency_ms": latency_ms,
                 "exit_ip": exit_ip,
                 "last_checked": checked_at,
-                "check_message": f"Xray 检测成功，本地 SOCKS5 端口 127.0.0.1:{socks_port}。",
+                "check_message": f"{diagnostic}；Xray 检测成功，本地 SOCKS5 端口 127.0.0.1:{socks_port}。",
             }
         except Exception as exc:
             return {
@@ -2691,7 +2800,7 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
                 "real_latency_ms": None,
                 "exit_ip": "",
                 "last_checked": checked_at,
-                "check_message": str(exc),
+                "check_message": f"{diagnostic}；{exc}",
             }
         finally:
             if process is not None:
@@ -4337,6 +4446,17 @@ def nodes_page():
         nodes=fetch_nodes(),
         node_status_badge_class=node_status_badge_class,
         xray_available=is_xray_available(),
+    )
+
+
+@app.route("/nodes/xray-status")
+def xray_status_page():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    return render_template_string(
+        XRAY_STATUS_TEMPLATE,
+        details=xray_status_details(),
     )
 
 

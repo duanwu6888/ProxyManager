@@ -10,5 +10,6 @@ if exist .env (
 if "%APP_HOST%"=="" set "APP_HOST=127.0.0.1"
 if "%APP_PORT%"=="" set "APP_PORT=5000"
 if "%DATABASE_URL%"=="" set "DATABASE_URL=sqlite:///proxy_manager.db"
+if "%XRAY_PATH%"=="" if exist "%CD%\tools\xray\xray.exe" set "XRAY_PATH=%CD%\tools\xray\xray.exe"
 
 python main.py
