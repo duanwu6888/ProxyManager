@@ -1191,7 +1191,7 @@ NODES_TEMPLATE = """
     <style>
         body { background: #f4f6f9; }
         .table td, .table th { vertical-align: middle; }
-        .node-table { min-width: 2180px; table-layout: fixed; font-size: 0.84rem; }
+        .node-table { min-width: 1900px; table-layout: fixed; font-size: 0.84rem; }
         .cell-compact { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .cell-name { width: 170px; }
         .cell-small { width: 90px; }
@@ -1201,7 +1201,7 @@ NODES_TEMPLATE = """
         @media (max-width: 575.98px) {
             main.container-fluid { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
             .mobile-full { width: 100%; }
-            .node-table { min-width: 1900px; font-size: 0.76rem; }
+            .node-table { min-width: 1660px; font-size: 0.76rem; }
         }
     </style>
 </head>
@@ -1273,8 +1273,6 @@ NODES_TEMPLATE = """
                             <th class="cell-medium">出口国家</th>
                             <th class="cell-medium">出口州/地区</th>
                             <th class="cell-medium">出口城市</th>
-                            <th class="cell-large">出口 ISP</th>
-                            <th class="cell-medium">出口 ASN</th>
                             <th class="cell-small">TCP 延迟</th>
                             <th class="cell-small">真实延迟</th>
                             <th class="cell-medium">最后检测</th>
@@ -1298,11 +1296,9 @@ NODES_TEMPLATE = """
                                 <td><span class="badge {{ node_status_badge_class(node.status) }}">{{ node.status }}</span></td>
                                 <td><span class="badge {{ node_status_badge_class(node.real_status or '-') }}">{{ node.real_status or "-" }}</span></td>
                                 <td><div class="cell-compact" title="{{ node.exit_ip or '-' }}">{{ node.exit_ip or "-" }}</div></td>
-                                <td><div class="cell-compact" title="{{ node.exit_country or 'Unknown' }}">{{ node.exit_country or "Unknown" }}</div></td>
-                                <td><div class="cell-compact" title="{{ node.exit_region or 'Unknown' }}">{{ node.exit_region or "Unknown" }}</div></td>
-                                <td><div class="cell-compact" title="{{ node.exit_city or 'Unknown' }}">{{ node.exit_city or "Unknown" }}</div></td>
-                                <td><div class="cell-compact" title="{{ node.exit_isp or 'Unknown' }}">{{ node.exit_isp or "Unknown" }}</div></td>
-                                <td><div class="cell-compact" title="{{ node.exit_asn or 'Unknown' }}">{{ node.exit_asn or "Unknown" }}</div></td>
+                                <td><div class="cell-compact" title="{{ node.exit_country or 'Unknown' }}">{{ display_location(node.exit_country) }}</div></td>
+                                <td><div class="cell-compact" title="{{ node.exit_region or 'Unknown' }}">{{ display_location(node.exit_region) }}</div></td>
+                                <td><div class="cell-compact" title="{{ node.exit_city or 'Unknown' }}">{{ display_location(node.exit_city) }}</div></td>
                                 <td>{{ node.latency_ms if node.latency_ms is not none else "-" }}</td>
                                 <td>{{ node.real_latency_ms if node.real_latency_ms is not none else "-" }}</td>
                                 <td>{{ node.last_checked or "-" }}</td>
@@ -1321,7 +1317,7 @@ NODES_TEMPLATE = """
                             </tr>
                         {% else %}
                             <tr>
-                                <td colspan="19" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
+                                <td colspan="17" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
                             </tr>
                         {% endfor %}
                     </tbody>
@@ -4551,6 +4547,7 @@ def nodes_page():
         NODES_TEMPLATE,
         nodes=fetch_nodes(),
         node_status_badge_class=node_status_badge_class,
+        display_location=display_location,
         xray_available=is_xray_available(),
     )
 
