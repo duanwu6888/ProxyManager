@@ -9,6 +9,7 @@ import urllib.request
 import random
 import secrets
 import ssl
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -36,13 +37,34 @@ app.config["DATABASE"] = resolve_database_path(
 app.secret_key = os.environ.get("SECRET_KEY", "proxy-manager-dev-secret")
 
 CSV_FILE = Path("proxy_check_results.csv")
-CONNECT_TIMEOUT_SECONDS = 5
+CONNECT_TIMEOUT_SECONDS = 30
+PROXY_CHECK_RETRY_ATTEMPTS = 3
+PROXY_CHECK_RETRY_DELAY_SECONDS = 2
 IPIFY_URL = "https://api.ipify.org?format=json"
 IP_API_JSON_URL = "http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,as,query,message"
 UNKNOWN = "Unknown"
 PROXY_TYPES = ("HTTP", "HTTPS", "SOCKS5", "SOCKS4")
 PROTOCOL_STATUSES = ("端口开放", "协议错误", "认证失败", "超时", "连接重置", "无代理服务")
 STATE_FILTERS = ("California", "New York", "Texas", "Florida")
+LOCATION_DISPLAY_NAMES = {
+    "": "-",
+    "Unknown": "未知",
+    "United States": "美国",
+    "USA": "美国",
+    "US": "美国",
+    "California": "加利福尼亚州",
+    "New York": "纽约州",
+    "Texas": "得克萨斯州",
+    "Florida": "佛罗里达州",
+    "Arizona": "亚利桑那州",
+    "Los Angeles": "洛杉矶",
+    "Phoenix": "凤凰城",
+    "Mesa": "梅萨",
+    "New York City": "纽约市",
+    "Miami": "迈阿密",
+    "Dallas": "达拉斯",
+    "Houston": "休斯敦",
+}
 HEALTH_LEVELS = ("健康", "一般", "危险", "失效")
 FAILURE_REASONS = (
     "DNS失败",
@@ -93,7 +115,7 @@ PAGE_TEMPLATE = """
 
         .proxy-table {
             table-layout: fixed;
-            min-width: 1660px;
+            min-width: 1160px;
             font-size: 0.82rem;
         }
 
@@ -119,7 +141,26 @@ PAGE_TEMPLATE = """
         .proxy-address {
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: 0.78rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
             white-space: nowrap;
+        }
+
+        .proxy-cell {
+            min-width: 0;
+        }
+
+        .proxy-rank-badge {
+            font-size: 0.62rem;
+            line-height: 1;
+            padding: 0.22rem 0.32rem;
+        }
+
+        .proxy-recommend-score {
+            color: #6c757d;
+            font-family: var(--bs-body-font-family);
+            font-size: 0.68rem;
+            margin-top: 0.18rem;
         }
 
         .cell-compact {
@@ -141,8 +182,20 @@ PAGE_TEMPLATE = """
             width: 128px;
         }
 
+        .cell-proxy {
+            width: 170px;
+        }
+
         .cell-large {
             width: 180px;
+        }
+
+        .cell-provider {
+            width: 190px;
+        }
+
+        .cell-customer {
+            width: 170px;
         }
 
         .cell-message {
@@ -159,10 +212,6 @@ PAGE_TEMPLATE = """
 
         .cell-reason {
             width: 126px;
-        }
-
-        .cell-recommend {
-            width: 88px;
         }
 
         .cell-protocol {
@@ -236,7 +285,7 @@ PAGE_TEMPLATE = """
             }
 
             .proxy-table {
-                min-width: 1540px;
+                min-width: 1080px;
                 font-size: 0.78rem;
             }
 
@@ -284,6 +333,9 @@ PAGE_TEMPLATE = """
                 </a>
                 <a href="{{ url_for('providers_page') }}" class="btn btn-outline-dark mobile-full">
                     来源管理
+                </a>
+                <a href="{{ url_for('customers_page') }}" class="btn btn-outline-dark mobile-full">
+                    客户管理
                 </a>
                 <a href="{{ url_for('logout') }}" class="btn btn-outline-secondary mobile-full">
                     Logout
@@ -351,7 +403,7 @@ PAGE_TEMPLATE = """
                                     {{ dashboard.best_proxy.ip }}:{{ dashboard.best_proxy.port }}
                                 </div>
                                 <div class="text-secondary small">
-                                    类型 {{ dashboard.best_proxy.proxy_type }} · 来源 {{ dashboard.best_proxy.provider_name or "默认来源" }}
+                                    类型 {{ dashboard.best_proxy.proxy_type }} · 来源 {{ dashboard.best_proxy.provider_name or "IPRoyal" }}
                                 </div>
                             {% else %}
                                 <div class="h4 mb-1">-</div>
@@ -544,7 +596,7 @@ PAGE_TEMPLATE = """
                     {% for item in dashboard.state_counts %}
                         <div class="col-6 col-xl-3">
                             <div class="border rounded bg-light p-3">
-                                <div class="text-secondary small">{{ item.state }}</div>
+                                <div class="text-secondary small">{{ display_location(item.state) }}</div>
                                 <div class="h3 mb-0">{{ item.count }}</div>
                             </div>
                         </div>
@@ -553,13 +605,96 @@ PAGE_TEMPLATE = """
             </div>
         </section>
 
-        <section class="row g-4">
-            <div class="col-12 col-xl-3">
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-body">
+                <form action="{{ url_for('index') }}" method="get" class="row g-2 align-items-end">
+                    <div class="col-12 col-md">
+                        <label for="q" class="form-label">&#25628;&#32034;</label>
+                        <input
+                            id="q"
+                            name="q"
+                            class="form-control"
+                            value="{{ query }}"
+                            placeholder="IP / 端口 / 备注 / 国家 / 州 / 城市"
+                        >
+                    </div>
+                    <div class="col-12 col-md-3">
+                        <label for="state" class="form-label">州筛选</label>
+                        <select id="state" name="state" class="form-select">
+                            <option value="">全部州</option>
+                            {% for state in state_filters %}
+                                <option value="{{ state }}" {% if selected_state == state %}selected{% endif %}>
+                                    {{ state }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-3">
+                        <label for="sort" class="form-label">排序</label>
+                        <select id="sort" name="sort" class="form-select">
+                            <option value="">默认</option>
+                            <option value="score" {% if selected_sort == 'score' %}selected{% endif %}>按评分</option>
+                            <option value="latency" {% if selected_sort == 'latency' %}selected{% endif %}>按延迟</option>
+                            <option value="success_rate" {% if selected_sort == 'success_rate' %}selected{% endif %}>按成功率</option>
+                            <option value="provider" {% if selected_sort == 'provider' %}selected{% endif %}>按来源</option>
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-3">
+                        <label for="provider_filter" class="form-label">来源筛选</label>
+                        <select id="provider_filter" name="provider" class="form-select">
+                            <option value="">全部来源</option>
+                            {% for provider in providers %}
+                                <option value="{{ provider.id }}" {% if selected_provider_id == provider.id %}selected{% endif %}>{{ provider.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-3">
+                        <label for="customer_filter" class="form-label">客户筛选</label>
+                        <select id="customer_filter" name="customer" class="form-select">
+                            <option value="">全部客户</option>
+                            <option value="unassigned" {% if selected_customer_filter == 'unassigned' %}selected{% endif %}>未分配</option>
+                            {% for customer in customers %}
+                                <option value="{{ customer.id }}" {% if selected_customer_id == customer.id %}selected{% endif %}>{{ customer.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-3">
+                        <label for="health" class="form-label">健康等级</label>
+                        <select id="health" name="health" class="form-select">
+                            <option value="">全部等级</option>
+                            {% for level in health_levels %}
+                                <option value="{{ level }}" {% if selected_health == level %}selected{% endif %}>{{ level }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-3">
+                        <label for="failure_reason" class="form-label">失败原因</label>
+                        <select id="failure_reason" name="failure_reason" class="form-select">
+                            <option value="">全部原因</option>
+                            {% for reason in failure_reasons %}
+                                <option value="{{ reason }}" {% if selected_failure_reason == reason %}selected{% endif %}>{{ reason }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-auto d-flex gap-2">
+                        <button type="submit" class="btn btn-outline-primary mobile-full">
+                            &#25628;&#32034;
+                        </button>
+                        <a href="{{ url_for('index') }}" class="btn btn-outline-secondary mobile-full">
+                            &#37325;&#32622;
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <section class="vstack gap-4">
+            <div>
                 <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">&#36755;&#20837; IP &#21644;&#31471;&#21475;</div>
+                    <div class="card-header bg-white fw-semibold">单个代理添加</div>
                     <div class="card-body">
-                        <form action="{{ url_for('create_proxy') }}" method="post" class="vstack gap-3">
-                            <div>
+                        <form action="{{ url_for('create_proxy') }}" method="post" class="row g-3 align-items-end">
+                            <div class="col-12 col-md-3 col-xl-2">
                                 <label for="ip" class="form-label">IP</label>
                                 <input
                                     id="ip"
@@ -569,7 +704,7 @@ PAGE_TEMPLATE = """
                                     required
                                 >
                             </div>
-                            <div>
+                            <div class="col-12 col-md-2 col-xl-1">
                                 <label for="port" class="form-label">&#31471;&#21475;</label>
                                 <input
                                     id="port"
@@ -580,16 +715,7 @@ PAGE_TEMPLATE = """
                                     required
                                 >
                             </div>
-                            <div>
-                                <label for="label" class="form-label">&#22791;&#27880;</label>
-                                <input
-                                    id="label"
-                                    name="label"
-                                    class="form-control"
-                                    placeholder="DNS / HTTP Proxy"
-                                >
-                            </div>
-                            <div>
+                            <div class="col-12 col-md-3 col-xl-2">
                                 <label for="proxy_username" class="form-label">认证用户名</label>
                                 <input
                                     id="proxy_username"
@@ -599,7 +725,7 @@ PAGE_TEMPLATE = """
                                     placeholder="可选"
                                 >
                             </div>
-                            <div>
+                            <div class="col-12 col-md-3 col-xl-2">
                                 <label for="proxy_password" class="form-label">认证密码</label>
                                 <input
                                     id="proxy_password"
@@ -610,7 +736,7 @@ PAGE_TEMPLATE = """
                                     placeholder="可选"
                                 >
                             </div>
-                            <div>
+                            <div class="col-12 col-md-3 col-xl-2">
                                 <label for="proxy_type" class="form-label">代理类型</label>
                                 <select id="proxy_type" name="proxy_type" class="form-select">
                                     {% for proxy_type in proxy_types %}
@@ -618,7 +744,7 @@ PAGE_TEMPLATE = """
                                     {% endfor %}
                                 </select>
                             </div>
-                            <div>
+                            <div class="col-12 col-md-3 col-xl-2">
                                 <label for="provider_id" class="form-label">代理来源</label>
                                 <select id="provider_id" name="provider_id" class="form-select">
                                     {% for provider in providers %}
@@ -626,87 +752,27 @@ PAGE_TEMPLATE = """
                                     {% endfor %}
                                 </select>
                             </div>
-                            <button type="submit" class="btn btn-primary w-100">
-                                &#28155;&#21152;&#20195;&#29702;
-                            </button>
+                            <div class="col-12 col-md-6 col-xl-2">
+                                <label for="label" class="form-label">&#22791;&#27880;</label>
+                                <input
+                                    id="label"
+                                    name="label"
+                                    class="form-control"
+                                    placeholder="DNS / HTTP Proxy"
+                                >
+                            </div>
+                            <div class="col-12 col-md-auto">
+                                <button type="submit" class="btn btn-primary mobile-full">
+                                    &#28155;&#21152;&#20195;&#29702;
+                                </button>
+                            </div>
                         </form>
                     </div>
                 </div>
             </div>
 
-            <div class="col-12 col-xl-9">
-                <div class="card border-0 shadow-sm mb-4">
-                    <div class="card-body">
-                        <form action="{{ url_for('index') }}" method="get" class="row g-2 align-items-end">
-                            <div class="col-12 col-md">
-                                <label for="q" class="form-label">&#25628;&#32034;</label>
-                                <input
-                                    id="q"
-                                    name="q"
-                                    class="form-control"
-                                    value="{{ query }}"
-                                    placeholder="IP / 端口 / 备注 / 国家 / 州 / 城市"
-                                >
-                            </div>
-                            <div class="col-12 col-md-3">
-                                <label for="state" class="form-label">州筛选</label>
-                                <select id="state" name="state" class="form-select">
-                                    <option value="">全部州</option>
-                                    {% for state in state_filters %}
-                                        <option value="{{ state }}" {% if selected_state == state %}selected{% endif %}>
-                                            {{ state }}
-                                        </option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            <div class="col-12 col-md-3">
-                                <label for="sort" class="form-label">排序</label>
-                                <select id="sort" name="sort" class="form-select">
-                                    <option value="">默认</option>
-                                    <option value="score" {% if selected_sort == 'score' %}selected{% endif %}>按评分</option>
-                                    <option value="latency" {% if selected_sort == 'latency' %}selected{% endif %}>按延迟</option>
-                                    <option value="success_rate" {% if selected_sort == 'success_rate' %}selected{% endif %}>按成功率</option>
-                                    <option value="provider" {% if selected_sort == 'provider' %}selected{% endif %}>按来源</option>
-                                </select>
-                            </div>
-                            <div class="col-12 col-md-3">
-                                <label for="provider_filter" class="form-label">来源筛选</label>
-                                <select id="provider_filter" name="provider" class="form-select">
-                                    <option value="">全部来源</option>
-                                    {% for provider in providers %}
-                                        <option value="{{ provider.id }}" {% if selected_provider_id == provider.id %}selected{% endif %}>{{ provider.name }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            <div class="col-12 col-md-3">
-                                <label for="health" class="form-label">健康等级</label>
-                                <select id="health" name="health" class="form-select">
-                                    <option value="">全部等级</option>
-                                    {% for level in health_levels %}
-                                        <option value="{{ level }}" {% if selected_health == level %}selected{% endif %}>{{ level }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            <div class="col-12 col-md-3">
-                                <label for="failure_reason" class="form-label">失败原因</label>
-                                <select id="failure_reason" name="failure_reason" class="form-select">
-                                    <option value="">全部原因</option>
-                                    {% for reason in failure_reasons %}
-                                        <option value="{{ reason }}" {% if selected_failure_reason == reason %}selected{% endif %}>{{ reason }}</option>
-                                    {% endfor %}
-                                </select>
-                            </div>
-                            <div class="col-12 col-md-auto d-flex gap-2">
-                                <button type="submit" class="btn btn-outline-primary mobile-full">
-                                    &#25628;&#32034;
-                                </button>
-                                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary mobile-full">
-                                    &#37325;&#32622;
-                                </a>
-                            </div>
-                        </form>
-                    </div>
-                </div>
+            <div>
+
 
                 <div class="card border-0 shadow-sm mb-4">
                     <div class="card-header bg-white fw-semibold">&#25209;&#37327;&#23548;&#20837;&#20195;&#29702;</div>
@@ -766,24 +832,15 @@ PAGE_TEMPLATE = """
                         <table class="table table-hover mb-0 proxy-table">
                             <thead class="table-light">
                                 <tr>
-                                    <th class="cell-medium">&#20195;&#29702;</th>
-                                    <th class="cell-recommend">推荐</th>
-                                    <th class="cell-recommend">推荐分</th>
+                                    <th class="cell-proxy">&#20195;&#29702;</th>
                                     <th class="cell-medium">来源</th>
+                                    <th class="cell-customer">客户</th>
                                     <th class="cell-tiny">类型</th>
                                     <th class="cell-auth">认证状态</th>
-                                    <th class="cell-protocol">识别协议</th>
-                                    <th class="cell-protocol">协议诊断</th>
-                                    <th class="cell-small">池状态</th>
-                                    <th class="cell-health">健康等级</th>
-                                    <th class="cell-failures">连续失败</th>
-                                    <th class="cell-tiny">评分</th>
                                     <th class="cell-small">成功率</th>
                                     <th class="cell-medium">出口 IP</th>
                                     <th class="cell-small">延迟</th>
-                                    <th class="cell-large">ISP</th>
-                                    <th class="cell-large">ASN</th>
-                                    <th class="cell-medium">&#22791;&#27880;</th>
+                                    <th class="cell-provider">&#22791;&#27880;</th>
                                     <th class="cell-small">最近结果</th>
                                     <th class="cell-small">&#22269;&#23478;</th>
                                     <th class="cell-small">&#24030;</th>
@@ -797,16 +854,29 @@ PAGE_TEMPLATE = """
                             <tbody>
                                 {% for proxy in proxies %}
                                     <tr>
-                                        <td class="proxy-address fw-semibold">{{ proxy.ip }}:{{ proxy.port }}</td>
                                         <td>
-                                            {% if proxy.id in top_proxy_ids %}
-                                                <span class="badge text-bg-warning">Top 10</span>
-                                            {% else %}
-                                                -
-                                            {% endif %}
+                                            <div class="proxy-cell">
+                                                <div class="proxy-address fw-semibold" title="{{ proxy.ip }}:{{ proxy.port }}">{{ proxy.ip }}:{{ proxy.port }}</div>
+                                                <div class="proxy-recommend-score">
+                                                    {% if proxy.id in top_proxy_ids %}
+                                                        <span class="badge text-bg-warning proxy-rank-badge">Top 10</span>
+                                                    {% endif %}
+                                                    推荐分 {{ recommend_score(proxy) }}
+                                                </div>
+                                            </div>
                                         </td>
-                                        <td>{{ recommend_score(proxy) }}</td>
-                                        <td><div class="cell-compact" title="{{ proxy.provider_name or '默认来源' }}">{{ proxy.provider_name or "默认来源" }}</div></td>
+                                        <td><div class="cell-compact" title="{{ proxy.provider_name or 'IPRoyal' }}">{{ proxy.provider_name or "IPRoyal" }}</div></td>
+                                        <td>
+                                            <form action="{{ url_for('assign_proxy_customer', proxy_id=proxy.id) }}" method="post" class="d-flex gap-1">
+                                                <select name="customer_id" class="form-select form-select-sm">
+                                                    <option value="">未分配</option>
+                                                    {% for customer in customers %}
+                                                        <option value="{{ customer.id }}" {% if proxy.customer_id == customer.id %}selected{% endif %}>{{ customer.name }}</option>
+                                                    {% endfor %}
+                                                </select>
+                                                <button class="btn btn-sm btn-outline-primary" type="submit">保存</button>
+                                            </form>
+                                        </td>
                                         <td><span class="badge text-bg-dark">{{ proxy.proxy_type }}</span></td>
                                         <td>
                                             {% set proxy_auth_status = auth_status(proxy) %}
@@ -820,50 +890,10 @@ PAGE_TEMPLATE = """
                                                 <span class="badge text-bg-secondary">{{ proxy_auth_status }}</span>
                                             {% endif %}
                                         </td>
-                                        <td>{{ proxy.last_detected_proxy_type or proxy.detected_proxy_type or "-" }}</td>
-                                        <td>
-                                            {% set protocol_status = proxy.last_protocol_status or proxy.protocol_status or "-" %}
-                                            {% if protocol_status == '端口开放' %}
-                                                <span class="badge text-bg-success">{{ protocol_status }}</span>
-                                            {% elif protocol_status == '认证失败' %}
-                                                <span class="badge text-bg-warning">{{ protocol_status }}</span>
-                                            {% elif protocol_status == '-' %}
-                                                -
-                                            {% else %}
-                                                <span class="badge text-bg-danger">{{ protocol_status }}</span>
-                                            {% endif %}
-                                        </td>
-                                        <td>
-                                            {% if proxy.status == 'online' %}
-                                                <span class="badge text-bg-success">在线</span>
-                                            {% elif proxy.status == 'invalid' %}
-                                                <span class="badge text-bg-danger">失效</span>
-                                            {% elif proxy.status == 'offline' %}
-                                                <span class="badge text-bg-warning">离线</span>
-                                            {% else %}
-                                                <span class="badge text-bg-secondary">未知</span>
-                                            {% endif %}
-                                        </td>
-                                        <td>
-                                            {% set level = health_level(proxy.success_rate) %}
-                                            {% if level == '健康' %}
-                                                <span class="badge text-bg-success">{{ level }}</span>
-                                            {% elif level == '一般' %}
-                                                <span class="badge text-bg-primary">{{ level }}</span>
-                                            {% elif level == '危险' %}
-                                                <span class="badge text-bg-warning">{{ level }}</span>
-                                            {% else %}
-                                                <span class="badge text-bg-danger">{{ level }}</span>
-                                            {% endif %}
-                                        </td>
-                                        <td>{{ proxy.consecutive_failures }} 次</td>
-                                        <td>{{ proxy.score }}</td>
                                         <td>{{ proxy.success_rate }}%</td>
                                         <td class="proxy-address">{{ proxy.last_exit_ip or proxy.exit_ip or "-" }}</td>
                                         <td>{{ proxy.last_latency_ms or proxy.latency_ms or "-" }}</td>
-                                        <td><div class="cell-compact" title="{{ proxy.last_isp or proxy.isp or '-' }}">{{ proxy.last_isp or proxy.isp or "-" }}</div></td>
-                                        <td><div class="cell-compact" title="{{ proxy.last_asn or proxy.asn or '-' }}">{{ proxy.last_asn or proxy.asn or "-" }}</div></td>
-                                        <td><div class="cell-compact" title="{{ proxy.label or '-' }}">{{ proxy.label or "-" }}</div></td>
+                                        <td><div class="cell-compact" title="{{ display_proxy_label(proxy) }}">{{ display_proxy_label(proxy) }}</div></td>
                                         <td>
                                             {% if proxy.last_connectable is none %}
                                                 <span class="badge rounded-pill text-bg-secondary">&#26410;&#26816;&#27979;</span>
@@ -873,9 +903,9 @@ PAGE_TEMPLATE = """
                                                 <span class="badge rounded-pill text-bg-danger">&#19981;&#21487;&#36830;&#25509;</span>
                                             {% endif %}
                                         </td>
-                                        <td><div class="cell-compact" title="{{ proxy.country or UNKNOWN }}">{{ proxy.country or UNKNOWN }}</div></td>
-                                        <td><div class="cell-compact" title="{{ proxy.state or UNKNOWN }}">{{ proxy.state or UNKNOWN }}</div></td>
-                                        <td><div class="cell-compact" title="{{ proxy.city or UNKNOWN }}">{{ proxy.city or UNKNOWN }}</div></td>
+                                        <td><div class="cell-compact" title="{{ display_location(proxy.country or UNKNOWN) }}">{{ display_location(proxy.country or UNKNOWN) }}</div></td>
+                                        <td><div class="cell-compact" title="{{ display_location(proxy.state or UNKNOWN) }}">{{ display_location(proxy.state or UNKNOWN) }}</div></td>
+                                        <td><div class="cell-compact" title="{{ display_location(proxy.city or UNKNOWN) }}">{{ display_location(proxy.city or UNKNOWN) }}</div></td>
                                         <td><div class="cell-compact" title="{{ proxy.last_failure_reason or proxy.failure_reason or '-' }}">{{ proxy.last_failure_reason or proxy.failure_reason or "-" }}</div></td>
                                         <td>
                                             {% if proxy.last_connectable == 0 %}
@@ -915,7 +945,7 @@ PAGE_TEMPLATE = """
                                         </td>
                                     </tr>
                                     <tr class="collapse diagnostic-row" id="history-{{ proxy.id }}">
-                                        <td colspan="26">
+                                        <td colspan="17">
                                             <div class="p-2">
                                                 <div class="fw-semibold mb-2">最近 10 次检测记录</div>
                                                 <div class="table-responsive">
@@ -963,7 +993,7 @@ PAGE_TEMPLATE = """
                                     </tr>
                                 {% else %}
                                     <tr>
-                                        <td colspan="26" class="text-center text-secondary py-5">
+                                        <td colspan="17" class="text-center text-secondary py-5">
                                             &#26242;&#26080;&#20195;&#29702;&#65292;&#35831;&#20808;&#28155;&#21152; IP &#21644;&#31471;&#21475;&#12290;
                                         </td>
                                     </tr>
@@ -1048,9 +1078,9 @@ PAGE_TEMPLATE = """
                                         </td>
                                         <td>{{ check.detected_proxy_type or "-" }}</td>
                                         <td>{{ check.protocol_status or "-" }}</td>
-                                        <td><div class="cell-compact" title="{{ check.country|replace('Unknown', '未知') }}">{{ check.country|replace('Unknown', '未知') }}</div></td>
-                                        <td><div class="cell-compact" title="{{ check.state|replace('Unknown', '未知') }}">{{ check.state|replace('Unknown', '未知') }}</div></td>
-                                        <td><div class="cell-compact" title="{{ check.city|replace('Unknown', '未知') }}">{{ check.city|replace('Unknown', '未知') }}</div></td>
+                                        <td><div class="cell-compact" title="{{ display_location(check.country) }}">{{ display_location(check.country) }}</div></td>
+                                        <td><div class="cell-compact" title="{{ display_location(check.state) }}">{{ display_location(check.state) }}</div></td>
+                                        <td><div class="cell-compact" title="{{ display_location(check.city) }}">{{ display_location(check.city) }}</div></td>
                                         <td><div class="cell-compact" title="{{ check.message }}">{{ check.message }}</div></td>
                                     </tr>
                                 {% else %}
@@ -1294,7 +1324,7 @@ API_KEYS_TEMPLATE = """
             {% endif %}
         {% endwith %}
         <section class="row g-3 mb-4">
-            <div class="col-6 col-xl-3"><div class="card border-0 shadow-sm"><div class="card-body"><div class="text-secondary small">Total Users</div><div class="display-6 fw-semibold">{{ metrics.total_users }}</div></div></div></div>
+            <div class="col-6 col-xl-3"><div class="card border-0 shadow-sm"><div class="card-body"><div class="text-secondary small">Customers</div><div class="display-6 fw-semibold">{{ metrics.total_customers }}</div></div></div></div>
             <div class="col-6 col-xl-3"><div class="card border-0 shadow-sm"><div class="card-body"><div class="text-secondary small">Total API Keys</div><div class="display-6 fw-semibold">{{ metrics.total_api_keys }}</div></div></div></div>
             <div class="col-6 col-xl-3"><div class="card border-0 shadow-sm"><div class="card-body"><div class="text-secondary small">Requests Today</div><div class="display-6 fw-semibold">{{ metrics.today_requests }}</div></div></div></div>
             <div class="col-6 col-xl-3"><div class="card border-0 shadow-sm"><div class="card-body"><div class="text-secondary small">Online Proxies</div><div class="display-6 fw-semibold text-success">{{ metrics.online_proxies }}</div></div></div></div>
@@ -1302,8 +1332,19 @@ API_KEYS_TEMPLATE = """
         <div class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white fw-semibold">Create API Key</div>
             <div class="card-body">
-                <form action="{{ url_for('create_api_key') }}" method="post">
-                    <button class="btn btn-primary mobile-full" type="submit">Create Key</button>
+                <form action="{{ url_for('create_api_key') }}" method="post" class="row g-2 align-items-end">
+                    <div class="col-12 col-md-5">
+                        <label for="api_customer_id" class="form-label">绑定客户</label>
+                        <select id="api_customer_id" name="customer_id" class="form-select">
+                            <option value="">全池管理员 Key</option>
+                            {% for customer in customers %}
+                                <option value="{{ customer.id }}">{{ customer.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-auto">
+                        <button class="btn btn-primary mobile-full" type="submit">Create Key</button>
+                    </div>
                 </form>
             </div>
         </div>
@@ -1312,12 +1353,13 @@ API_KEYS_TEMPLATE = """
             <div class="table-responsive">
                 <table class="table table-hover mb-0">
                     <thead class="table-light">
-                        <tr><th>API Key</th><th>Status</th><th>Created</th><th>Calls</th><th class="text-end">Actions</th></tr>
+                        <tr><th>API Key</th><th>客户</th><th>Status</th><th>Created</th><th>Calls</th><th class="text-end">Actions</th></tr>
                     </thead>
                     <tbody>
                         {% for key in api_keys %}
                             <tr>
                                 <td><code>{{ key.api_key }}</code></td>
+                                <td>{{ key.customer_name or "全池" }}</td>
                                 <td><span class="badge {% if key.status == 'active' %}text-bg-success{% else %}text-bg-secondary{% endif %}">{{ key.status }}</span></td>
                                 <td>{{ key.created_at }}</td>
                                 <td>{{ key.call_count }}</td>
@@ -1333,12 +1375,128 @@ API_KEYS_TEMPLATE = """
                                 </td>
                             </tr>
                         {% else %}
-                            <tr><td colspan="5" class="text-center text-secondary py-5">No API keys yet.</td></tr>
+                            <tr><td colspan="6" class="text-center text-secondary py-5">No API keys yet.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
         </div>
+    </main>
+</body>
+</html>
+"""
+
+CUSTOMERS_TEMPLATE = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ProxyManager Customers</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f4f6f9; }
+        .table td, .table th { vertical-align: middle; }
+        @media (max-width: 575.98px) {
+            main.container-fluid { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+            .mobile-full { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+    <main class="container-fluid px-4 py-4">
+        <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
+            <div>
+                <h1 class="h3 mb-1">客户管理</h1>
+                <div class="text-secondary">客户用于分配代理和隔离 API Key 返回数据。</div>
+            </div>
+            <div class="d-flex flex-column flex-sm-row gap-2">
+                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary mobile-full">返回代理列表</a>
+                <a href="{{ url_for('api_keys_page') }}" class="btn btn-outline-dark mobile-full">API Keys</a>
+            </div>
+        </div>
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-info">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <section class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white fw-semibold">新增客户</div>
+            <div class="card-body">
+                <form action="{{ url_for('create_customer') }}" method="post" class="row g-2 align-items-end">
+                    <div class="col-12 col-md-4">
+                        <label for="name" class="form-label">客户名称</label>
+                        <input id="name" name="name" class="form-control" placeholder="例如 Customer A" required>
+                    </div>
+                    <div class="col-12 col-md-5">
+                        <label for="contact" class="form-label">联系方式/备注</label>
+                        <input id="contact" name="contact" class="form-control" placeholder="邮箱、Telegram、合同编号等">
+                    </div>
+                    <div class="col-12 col-md-auto">
+                        <button class="btn btn-primary mobile-full" type="submit">新增客户</button>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <section class="card border-0 shadow-sm">
+            <div class="card-header bg-white fw-semibold">客户列表 <span class="badge text-bg-light">{{ stats|length }} items</span></div>
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>客户</th>
+                            <th>联系方式</th>
+                            <th>状态</th>
+                            <th>代理数量</th>
+                            <th>在线代理</th>
+                            <th>API Key</th>
+                            <th>创建时间</th>
+                            <th class="text-end">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in stats %}
+                            <tr>
+                                <td>
+                                    <form action="{{ url_for('update_customer', customer_id=item.id) }}" method="post" class="row g-2">
+                                        <div class="col-12">
+                                            <input name="name" class="form-control form-control-sm" value="{{ item.name }}" required>
+                                        </div>
+                                </td>
+                                <td><input name="contact" class="form-control form-control-sm" value="{{ item.contact }}"></td>
+                                <td>
+                                    <span class="badge {% if item.status == 'active' %}text-bg-success{% else %}text-bg-secondary{% endif %}">{{ item.status }}</span>
+                                </td>
+                                <td>{{ item.proxy_count }}</td>
+                                <td>{{ item.online_count }}</td>
+                                <td>{{ item.api_key_count }}</td>
+                                <td>{{ item.created_at }}</td>
+                                <td>
+                                    <div class="d-flex justify-content-end gap-2">
+                                        <button class="btn btn-sm btn-outline-primary" type="submit">保存</button>
+                                    </form>
+                                        {% if item.status == 'active' %}
+                                            <form action="{{ url_for('disable_customer', customer_id=item.id) }}" method="post"><button class="btn btn-sm btn-outline-warning" type="submit">禁用</button></form>
+                                        {% else %}
+                                            <form action="{{ url_for('enable_customer', customer_id=item.id) }}" method="post"><button class="btn btn-sm btn-outline-success" type="submit">启用</button></form>
+                                        {% endif %}
+                                        <form action="{{ url_for('delete_customer', customer_id=item.id) }}" method="post" onsubmit="return confirm('删除客户后，该客户代理会变为未分配，API Key 会变为全池 Key。确认删除？');">
+                                            <button class="btn btn-sm btn-outline-danger" type="submit">删除</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% else %}
+                            <tr><td colspan="8" class="text-center text-secondary py-4">暂无客户</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
     </main>
 </body>
 </html>
@@ -1477,7 +1635,7 @@ PROVIDERS_TEMPLATE = """
                                                 id="delete-provider-{{ provider.id }}"
                                                 action="{{ url_for('delete_provider', provider_id=provider.id) }}"
                                                 method="post"
-                                                onsubmit="return confirm('删除来源后，该来源下代理会归入默认来源。确认删除？');"
+                                                onsubmit="return confirm('删除来源后，该来源下代理会归入内置来源。确认删除？');"
                                             ></form>
                                         </td>
                                     </tr>
@@ -1540,10 +1698,12 @@ def init_db() -> None:
                 failure_reason TEXT NOT NULL DEFAULT '',
                 protocol_status TEXT NOT NULL DEFAULT '',
                 provider_id INTEGER,
+                customer_id INTEGER,
                 label TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(provider_id) REFERENCES source_providers(id) ON DELETE SET NULL,
+                FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE SET NULL,
                 UNIQUE(ip, port)
             );
 
@@ -1551,6 +1711,14 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 description TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                contact TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
                 created_at TEXT NOT NULL
             );
 
@@ -1594,10 +1762,12 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS api_keys (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
+                customer_id INTEGER,
                 api_key TEXT NOT NULL UNIQUE,
                 status TEXT NOT NULL DEFAULT 'active',
                 created_at TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE SET NULL
             );
 
             CREATE TABLE IF NOT EXISTS scheduler_settings (
@@ -1627,10 +1797,23 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         )
         """,
     )
+    ensure_table(
+        db,
+        "customers",
+        """
+        CREATE TABLE IF NOT EXISTS customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            contact TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL
+        )
+        """,
+    )
     db.execute(
         """
         INSERT OR IGNORE INTO source_providers (id, name, description, created_at)
-        VALUES (1, '默认来源', '系统默认来源，用于已有或未指定来源的代理。', ?)
+        VALUES (1, 'IPRoyal', 'IPRoyal SOCKS5 认证代理来源。', ?)
         """,
         (current_time(),),
     )
@@ -1655,6 +1838,7 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "failure_reason": "TEXT NOT NULL DEFAULT ''",
         "protocol_status": "TEXT NOT NULL DEFAULT ''",
         "provider_id": "INTEGER",
+        "customer_id": "INTEGER",
     }
     for column, definition in proxy_column_defaults.items():
         if column not in columns:
@@ -1694,13 +1878,20 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS api_keys (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
+            customer_id INTEGER,
             api_key TEXT NOT NULL UNIQUE,
             status TEXT NOT NULL DEFAULT 'active',
             created_at TEXT NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY(customer_id) REFERENCES customers(id) ON DELETE SET NULL
         )
         """,
     )
+    api_key_columns = {
+        row["name"] for row in db.execute("PRAGMA table_info(api_keys)").fetchall()
+    }
+    if "customer_id" not in api_key_columns:
+        db.execute("ALTER TABLE api_keys ADD COLUMN customer_id INTEGER")
     ensure_table(
         db,
         "scheduler_settings",
@@ -1837,6 +2028,22 @@ def normalize_connectable(value: str) -> int:
 
 def current_time() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def display_location(value: str | None) -> str:
+    text = (value or "").strip()
+    return LOCATION_DISPLAY_NAMES.get(text, text or "-")
+
+
+def display_proxy_label(proxy: sqlite3.Row | dict[str, object]) -> str:
+    label = str(proxy["label"] or "").strip()
+    if label:
+        return label
+    username = str(proxy["username"] or "").strip() if "username" in proxy.keys() else ""
+    proxy_type = str(proxy["proxy_type"] or "").strip() if "proxy_type" in proxy.keys() else ""
+    if username:
+        return f"IPRoyal {proxy_type or '代理'} 认证代理"
+    return "-"
 
 
 def validate_proxy(ip: str, port_text: str) -> tuple[int | None, str | None]:
@@ -2044,7 +2251,7 @@ def recommend_score(proxy: sqlite3.Row | dict[str, object]) -> float:
     )
 
 
-def verify_proxy(proxy: sqlite3.Row) -> dict[str, object]:
+def verify_proxy_once(proxy: sqlite3.Row) -> dict[str, object]:
     port_open, initial_protocol_status = tcp_port_status(proxy["ip"], proxy["port"])
     if not port_open:
         return {
@@ -2139,6 +2346,47 @@ def verify_proxy(proxy: sqlite3.Row) -> dict[str, object]:
         "isp": UNKNOWN,
         "asn": UNKNOWN,
     }
+
+
+def retry_failure_summary(attempt: int, result: dict[str, object]) -> str:
+    reason = str(result.get("failure_reason") or result.get("protocol_status") or "检测失败")
+    message = str(result.get("message") or reason)
+    return f"第 {attempt} 次失败: {reason} - {message}"
+
+
+def verify_proxy(proxy: sqlite3.Row) -> dict[str, object]:
+    failures: list[str] = []
+    last_result: dict[str, object] | None = None
+
+    for attempt in range(1, PROXY_CHECK_RETRY_ATTEMPTS + 1):
+        result = verify_proxy_once(proxy)
+        if result["connectable"]:
+            if failures:
+                result["message"] = "; ".join([*failures, f"第 {attempt} 次成功: {result['message']}"])
+            return result
+
+        failures.append(retry_failure_summary(attempt, result))
+        last_result = result
+        if attempt < PROXY_CHECK_RETRY_ATTEMPTS:
+            time.sleep(PROXY_CHECK_RETRY_DELAY_SECONDS)
+
+    if last_result is None:
+        last_result = {
+            "connectable": False,
+            "message": "检测失败",
+            "failure_reason": "HTTP失败",
+            "detected_proxy_type": "",
+            "protocol_status": "协议错误",
+            "exit_ip": "",
+            "latency_ms": None,
+            "country": UNKNOWN,
+            "state": UNKNOWN,
+            "city": UNKNOWN,
+            "isp": UNKNOWN,
+            "asn": UNKNOWN,
+        }
+    last_result["message"] = "; ".join(failures)
+    return last_result
 
 
 def latency_score_bonus(latency_ms: int | None) -> int:
@@ -2262,6 +2510,8 @@ def fetch_proxies(
     health_filter: str = "",
     failure_reason_filter: str = "",
     provider_id: int | None = None,
+    customer_id: int | None = None,
+    unassigned_only: bool = False,
 ) -> list[sqlite3.Row]:
     where = ""
     params: list[str] = []
@@ -2279,11 +2529,12 @@ def fetch_proxies(
             OR c.city LIKE ?
             OR c.failure_reason LIKE ?
             OR sp.name LIKE ?
+            OR cu.name LIKE ?
             )
             """
         )
         like_query = f"%{query}%"
-        params.extend([like_query] * 9)
+        params.extend([like_query] * 10)
     if state:
         conditions.append("c.state = ?")
         params.append(state)
@@ -2293,6 +2544,11 @@ def fetch_proxies(
     if provider_id:
         conditions.append("p.provider_id = ?")
         params.append(provider_id)
+    if customer_id:
+        conditions.append("p.customer_id = ?")
+        params.append(customer_id)
+    if unassigned_only:
+        conditions.append("p.customer_id IS NULL")
     if conditions:
         where = "WHERE " + " AND ".join(conditions)
 
@@ -2312,6 +2568,8 @@ def fetch_proxies(
             p.*,
             sp.name AS provider_name,
             sp.description AS provider_description,
+            cu.name AS customer_name,
+            cu.status AS customer_status,
             c.checked_at AS last_checked_at,
             c.connectable AS last_connectable,
             c.message AS last_message,
@@ -2331,6 +2589,7 @@ def fetch_proxies(
             END AS success_rate
         FROM proxies p
         LEFT JOIN source_providers sp ON sp.id = p.provider_id
+        LEFT JOIN customers cu ON cu.id = p.customer_id
         LEFT JOIN checks c ON c.id = (
             SELECT id FROM checks
             WHERE proxy_id = p.id
@@ -2578,7 +2837,7 @@ def build_chart_data() -> dict[str, list]:
         "online_rates": online_rates,
         "failure_rates": failure_rates,
         "proxy_growth": proxy_growth,
-        "country_labels": [row["country"] for row in country_rows] or [UNKNOWN],
+        "country_labels": [display_location(row["country"]) for row in country_rows] or [display_location(UNKNOWN)],
         "country_counts": [row["count"] for row in country_rows] or [0],
     }
 
@@ -2646,6 +2905,7 @@ def serialize_proxy(proxy: sqlite3.Row) -> dict[str, object]:
         "auth_enabled": bool(proxy["username"] if "username" in proxy.keys() else ""),
         "auth_status": auth_status(proxy),
         "provider": proxy["provider_name"] if "provider_name" in proxy.keys() else "",
+        "customer": proxy["customer_name"] if "customer_name" in proxy.keys() else "",
         "country": proxy["country"] or UNKNOWN,
         "state": proxy["state"] or UNKNOWN,
         "city": proxy["city"] or UNKNOWN,
@@ -2685,10 +2945,13 @@ def find_api_key() -> sqlite3.Row | None:
         return None
     return get_db().execute(
         """
-        SELECT k.*, u.username
+        SELECT k.*, u.username, c.name AS customer_name
         FROM api_keys k
         JOIN users u ON u.id = k.user_id
-        WHERE k.api_key = ? AND k.status = 'active'
+        LEFT JOIN customers c ON c.id = k.customer_id
+        WHERE k.api_key = ?
+          AND k.status = 'active'
+          AND (k.customer_id IS NULL OR c.status = 'active')
         """,
         (api_key,),
     ).fetchone()
@@ -2734,6 +2997,7 @@ def fetch_online_proxies(
     city: str | None = None,
     proxy_type: str | None = None,
     provider: str | None = None,
+    customer_id: int | None = None,
 ) -> list[sqlite3.Row]:
     conditions = ["c.connectable = 1", "p.status = 'online'"]
     params: list[str] = []
@@ -2752,6 +3016,9 @@ def fetch_online_proxies(
     if provider is not None:
         conditions.append("LOWER(sp.name) = LOWER(?)")
         params.append(provider)
+    if customer_id is not None:
+        conditions.append("p.customer_id = ?")
+        params.append(customer_id)
 
     return get_db().execute(
         """
@@ -2762,6 +3029,7 @@ def fetch_online_proxies(
             p.username,
             p.password,
             sp.name AS provider_name,
+            cu.name AS customer_name,
             p.score,
             p.latency_ms,
             p.isp,
@@ -2785,6 +3053,7 @@ def fetch_online_proxies(
             END AS success_rate
         FROM proxies p
         LEFT JOIN source_providers sp ON sp.id = p.provider_id
+        LEFT JOIN customers cu ON cu.id = p.customer_id
         JOIN checks c ON c.id = (
             SELECT id FROM checks
             WHERE proxy_id = p.id
@@ -2804,6 +3073,10 @@ def api_success(data, api_key: sqlite3.Row):
     return jsonify({"success": True, "count": count, "data": data})
 
 
+def api_key_customer_id(api_key: sqlite3.Row) -> int | None:
+    return api_key["customer_id"] if "customer_id" in api_key.keys() and api_key["customer_id"] else None
+
+
 def best_proxy_response(
     api_key: sqlite3.Row,
     *,
@@ -2811,7 +3084,12 @@ def best_proxy_response(
     provider: str | None = None,
     state: str | None = None,
 ):
-    proxies = fetch_online_proxies(proxy_type=proxy_type, provider=provider, state=state)
+    proxies = fetch_online_proxies(
+        proxy_type=proxy_type,
+        provider=provider,
+        state=state,
+        customer_id=api_key_customer_id(api_key),
+    )
     if not proxies:
         return api_success(None, api_key)
     best_proxy = recommend_ranked_proxies(proxies)[0]
@@ -2823,6 +3101,7 @@ def dashboard_metrics() -> dict[str, int]:
     return {
         "total_users": get_db().execute("SELECT COUNT(*) FROM users").fetchone()[0],
         "total_api_keys": get_db().execute("SELECT COUNT(*) FROM api_keys").fetchone()[0],
+        "total_customers": get_db().execute("SELECT COUNT(*) FROM customers").fetchone()[0],
         "today_requests": get_db().execute(
             "SELECT COUNT(*) FROM api_logs WHERE accessed_at LIKE ?", (f"{today}%",)
         ).fetchone()[0],
@@ -2835,8 +3114,10 @@ def user_api_keys(user_id: int) -> list[sqlite3.Row]:
         """
         SELECT
             k.*,
+            c.name AS customer_name,
             COUNT(l.id) AS call_count
         FROM api_keys k
+        LEFT JOIN customers c ON c.id = k.customer_id
         LEFT JOIN api_logs l ON l.api_key_id = k.id
         WHERE k.user_id = ?
         GROUP BY k.id
@@ -2844,6 +3125,29 @@ def user_api_keys(user_id: int) -> list[sqlite3.Row]:
         """,
         (user_id,),
     ).fetchall()
+
+
+def customers(include_inactive: bool = True) -> list[sqlite3.Row]:
+    where = "" if include_inactive else "WHERE status = 'active'"
+    return get_db().execute(
+        """
+        SELECT *
+        FROM customers
+        """ + where + """
+        ORDER BY status = 'disabled' ASC, name COLLATE NOCASE ASC, id ASC
+        """
+    ).fetchall()
+
+
+def valid_customer_id(customer_id_text: str, allow_empty: bool = True) -> int | None:
+    try:
+        customer_id = int(customer_id_text)
+    except (TypeError, ValueError):
+        return None if allow_empty else 0
+    row = get_db().execute(
+        "SELECT id FROM customers WHERE id = ?", (customer_id,)
+    ).fetchone()
+    return row["id"] if row else None
 
 
 def source_providers() -> list[sqlite3.Row]:
@@ -2892,6 +3196,27 @@ def provider_stats() -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def customer_stats() -> list[sqlite3.Row]:
+    return get_db().execute(
+        """
+        SELECT
+            c.id,
+            c.name,
+            c.contact,
+            c.status,
+            c.created_at,
+            COUNT(DISTINCT p.id) AS proxy_count,
+            COUNT(DISTINCT CASE WHEN p.status = 'online' THEN p.id END) AS online_count,
+            COUNT(DISTINCT k.id) AS api_key_count
+        FROM customers c
+        LEFT JOIN proxies p ON p.customer_id = c.id
+        LEFT JOIN api_keys k ON k.customer_id = c.id
+        GROUP BY c.id
+        ORDER BY c.status = 'disabled' ASC, c.name COLLATE NOCASE ASC
+        """
+    ).fetchall()
+
+
 def parse_proxy_line(line: str) -> tuple[str, str, str, str, str, str] | None:
     cleaned = line.strip()
     if not cleaned or cleaned.startswith("#"):
@@ -2903,6 +3228,7 @@ def parse_proxy_line(line: str) -> tuple[str, str, str, str, str, str] | None:
     colon_parts = cleaned.split(":")
     if len(colon_parts) == 4 and " " not in cleaned and "," not in cleaned:
         ip, port_text, username, password = [part.strip() for part in colon_parts]
+        label = "IPRoyal SOCKS5 认证代理"
         return ip, port_text, "SOCKS5", label, username, password
 
     if "," in cleaned:
@@ -2987,6 +3313,11 @@ def index():
     selected_health = request.args.get("health", "").strip()
     selected_failure_reason = request.args.get("failure_reason", "").strip()
     selected_provider_id = valid_provider_id(request.args.get("provider", "")) if request.args.get("provider") else 0
+    selected_customer_filter = request.args.get("customer", "").strip()
+    selected_customer_id = 0
+    unassigned_only = selected_customer_filter == "unassigned"
+    if selected_customer_filter and not unassigned_only:
+        selected_customer_id = valid_customer_id(selected_customer_filter) or 0
     if selected_state not in STATE_FILTERS:
         selected_state = ""
     if selected_sort not in {"score", "latency", "success_rate", "provider"}:
@@ -3003,17 +3334,22 @@ def index():
         selected_health,
         selected_failure_reason,
         selected_provider_id or None,
+        selected_customer_id or None,
+        unassigned_only,
     )
     proxy_check_map = fetch_proxy_check_history([proxy["id"] for proxy in proxies])
     return render_template_string(
         PAGE_TEMPLATE,
         auth_status=auth_status,
+        display_location=display_location,
+        display_proxy_label=display_proxy_label,
         failure_reasons=FAILURE_REASONS,
         failure_summary_reasons=FAILURE_REASON_SUMMARY,
         health_level=health_level,
         health_levels=HEALTH_LEVELS,
         UNKNOWN=UNKNOWN,
         chart_data=build_chart_data(),
+        customers=customers(False),
         dashboard=build_dashboard_stats(all_proxies),
         invalid_proxies=[proxy for proxy in all_proxies if proxy["status"] == "invalid"],
         query=query,
@@ -3026,6 +3362,8 @@ def index():
         scheduler_config=scheduler_settings(),
         selected_failure_reason=selected_failure_reason,
         selected_health=selected_health,
+        selected_customer_filter=selected_customer_filter,
+        selected_customer_id=selected_customer_id,
         selected_provider_id=selected_provider_id,
         selected_state=selected_state,
         selected_sort=selected_sort,
@@ -3100,6 +3438,7 @@ def api_keys_page():
     return render_template_string(
         API_KEYS_TEMPLATE,
         api_keys=user_api_keys(user["id"]),
+        customers=customers(False),
         metrics=dashboard_metrics(),
     )
 
@@ -3110,12 +3449,13 @@ def create_api_key():
     if auth_redirect:
         return auth_redirect
     user = get_current_user()
+    customer_id = valid_customer_id(request.form.get("customer_id", "")) if request.form.get("customer_id") else None
     get_db().execute(
         """
-        INSERT INTO api_keys (user_id, api_key, status, created_at)
-        VALUES (?, ?, 'active', ?)
+        INSERT INTO api_keys (user_id, customer_id, api_key, status, created_at)
+        VALUES (?, ?, ?, 'active', ?)
         """,
-        (user["id"], generate_api_key(), current_time()),
+        (user["id"], customer_id, generate_api_key(), current_time()),
     )
     get_db().commit()
     flash("API key created.")
@@ -3156,6 +3496,112 @@ def delete_api_key(key_id: int):
     get_db().commit()
     flash("API key deleted.")
     return redirect(url_for("api_keys_page"))
+
+
+@app.route("/customers")
+def customers_page():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    return render_template_string(
+        CUSTOMERS_TEMPLATE,
+        stats=customer_stats(),
+    )
+
+
+@app.route("/customers", methods=["POST"])
+def create_customer():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    name = request.form.get("name", "").strip()
+    contact = request.form.get("contact", "").strip()
+    if not name:
+        flash("客户名称不能为空。")
+        return redirect(url_for("customers_page"))
+    try:
+        get_db().execute(
+            """
+            INSERT INTO customers (name, contact, status, created_at)
+            VALUES (?, ?, 'active', ?)
+            """,
+            (name, contact, current_time()),
+        )
+        get_db().commit()
+        flash("客户已创建。")
+    except sqlite3.IntegrityError:
+        flash("客户名称已存在。")
+    return redirect(url_for("customers_page"))
+
+
+@app.route("/customers/<int:customer_id>", methods=["POST"])
+def update_customer(customer_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    name = request.form.get("name", "").strip()
+    contact = request.form.get("contact", "").strip()
+    if not name:
+        flash("客户名称不能为空。")
+        return redirect(url_for("customers_page"))
+    try:
+        get_db().execute(
+            "UPDATE customers SET name = ?, contact = ? WHERE id = ?",
+            (name, contact, customer_id),
+        )
+        get_db().commit()
+        flash("客户已更新。")
+    except sqlite3.IntegrityError:
+        flash("客户名称已存在。")
+    return redirect(url_for("customers_page"))
+
+
+def update_customer_status(customer_id: int, status: str):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    get_db().execute("UPDATE customers SET status = ? WHERE id = ?", (status, customer_id))
+    get_db().commit()
+    flash(f"客户已{('启用' if status == 'active' else '禁用')}。")
+    return redirect(url_for("customers_page"))
+
+
+@app.route("/customers/<int:customer_id>/enable", methods=["POST"])
+def enable_customer(customer_id: int):
+    return update_customer_status(customer_id, "active")
+
+
+@app.route("/customers/<int:customer_id>/disable", methods=["POST"])
+def disable_customer(customer_id: int):
+    return update_customer_status(customer_id, "disabled")
+
+
+@app.route("/customers/<int:customer_id>/delete", methods=["POST"])
+def delete_customer(customer_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    get_db().execute("UPDATE proxies SET customer_id = NULL WHERE customer_id = ?", (customer_id,))
+    get_db().execute("UPDATE api_keys SET customer_id = NULL WHERE customer_id = ?", (customer_id,))
+    get_db().execute("DELETE FROM customers WHERE id = ?", (customer_id,))
+    get_db().commit()
+    flash("客户已删除，相关代理已变为未分配。")
+    return redirect(url_for("customers_page"))
+
+
+@app.route("/proxies/<int:proxy_id>/assign-customer", methods=["POST"])
+def assign_proxy_customer(proxy_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    customer_id = valid_customer_id(request.form.get("customer_id", "")) if request.form.get("customer_id") else None
+    get_db().execute(
+        "UPDATE proxies SET customer_id = ?, updated_at = ? WHERE id = ?",
+        (customer_id, current_time(), proxy_id),
+    )
+    get_db().commit()
+    flash("代理客户分配已更新。")
+    return redirect(request.referrer or url_for("index"))
 
 
 @app.route("/providers")
@@ -3227,12 +3673,12 @@ def delete_provider(provider_id: int):
     if auth_redirect:
         return auth_redirect
     if provider_id == 1:
-        flash("默认来源不能删除。")
+        flash("内置来源不能删除。")
         return redirect(url_for("providers_page"))
     get_db().execute("UPDATE proxies SET provider_id = 1 WHERE provider_id = ?", (provider_id,))
     get_db().execute("DELETE FROM source_providers WHERE id = ?", (provider_id,))
     get_db().commit()
-    flash("来源已删除，该来源下代理已归入默认来源。")
+    flash("来源已删除，该来源下代理已归入内置来源。")
     return redirect(url_for("providers_page"))
 
 
@@ -3383,6 +3829,7 @@ def export_csv():
             "auth_status",
             "username",
             "provider",
+            "customer",
             "label",
             "last_checked_at",
             "connectable",
@@ -3412,6 +3859,7 @@ def export_csv():
                 auth_status(proxy),
                 proxy["username"] or "",
                 proxy["provider_name"] or "",
+                proxy["customer_name"] or "",
                 proxy["label"],
                 proxy["last_checked_at"] or "",
                 "" if proxy["last_connectable"] is None else proxy["last_connectable"],
@@ -3449,7 +3897,7 @@ def api_docs():
         {"method": "GET", "path": "/api/best"},
         {"method": "GET", "path": "/api/best/http"},
         {"method": "GET", "path": "/api/best/socks5"},
-        {"method": "GET", "path": "/api/best/provider/默认来源"},
+        {"method": "GET", "path": "/api/best/provider/IPRoyal"},
         {"method": "GET", "path": "/api/best/state/California"},
         {"method": "GET", "path": "/api/country/United States"},
         {"method": "GET", "path": "/api/state/California"},
@@ -3468,7 +3916,10 @@ def api_proxies():
     api_key, key_error = require_api_key()
     if key_error:
         return key_error
-    proxies = [serialize_proxy(proxy) for proxy in fetch_online_proxies()]
+    proxies = [
+        serialize_proxy(proxy)
+        for proxy in fetch_online_proxies(customer_id=api_key_customer_id(api_key))
+    ]
     return api_success(proxies, api_key)
 
 
@@ -3477,7 +3928,7 @@ def api_random():
     api_key, key_error = require_api_key()
     if key_error:
         return key_error
-    proxies = fetch_online_proxies()
+    proxies = fetch_online_proxies(customer_id=api_key_customer_id(api_key))
     if not proxies:
         return api_success(None, api_key)
     return api_success(serialize_proxy(random.choice(proxies)), api_key)
@@ -3528,7 +3979,10 @@ def api_country(country: str):
     api_key, key_error = require_api_key()
     if key_error:
         return key_error
-    proxies = [serialize_proxy(proxy) for proxy in fetch_online_proxies(country=country)]
+    proxies = [
+        serialize_proxy(proxy)
+        for proxy in fetch_online_proxies(country=country, customer_id=api_key_customer_id(api_key))
+    ]
     return api_success(proxies, api_key)
 
 
@@ -3537,7 +3991,10 @@ def api_state(state: str):
     api_key, key_error = require_api_key()
     if key_error:
         return key_error
-    proxies = [serialize_proxy(proxy) for proxy in fetch_online_proxies(state=state)]
+    proxies = [
+        serialize_proxy(proxy)
+        for proxy in fetch_online_proxies(state=state, customer_id=api_key_customer_id(api_key))
+    ]
     return api_success(proxies, api_key)
 
 
@@ -3546,7 +4003,10 @@ def api_city(city: str):
     api_key, key_error = require_api_key()
     if key_error:
         return key_error
-    proxies = [serialize_proxy(proxy) for proxy in fetch_online_proxies(city=city)]
+    proxies = [
+        serialize_proxy(proxy)
+        for proxy in fetch_online_proxies(city=city, customer_id=api_key_customer_id(api_key))
+    ]
     return api_success(proxies, api_key)
 
 
