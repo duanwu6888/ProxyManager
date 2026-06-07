@@ -94,7 +94,6 @@ PAGE_TEMPLATE = """
         href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
         rel="stylesheet"
     >
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <style>
         body {
             background: #f4f6f9;
@@ -328,6 +327,9 @@ PAGE_TEMPLATE = """
                 <a href="{{ url_for('api_docs') }}" class="btn btn-outline-primary mobile-full">
                     API v2
                 </a>
+                <a href="{{ url_for('analytics_page') }}" class="btn btn-outline-primary mobile-full">
+                    &#25968;&#25454;&#20998;&#26512;
+                </a>
                 <a href="{{ url_for('api_keys_page') }}" class="btn btn-outline-dark mobile-full">
                     API Keys
                 </a>
@@ -560,49 +562,6 @@ PAGE_TEMPLATE = """
                     </div>
                 </div>
             {% endfor %}
-        </section>
-
-        <section class="row g-4 mb-4">
-            <div class="col-12 col-xl-6">
-                <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">在线率趋势</div>
-                    <div class="card-body chart-body"><canvas id="onlineRateChart"></canvas></div>
-                </div>
-            </div>
-            <div class="col-12 col-xl-6">
-                <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">代理增长</div>
-                    <div class="card-body chart-body"><canvas id="proxyGrowthChart"></canvas></div>
-                </div>
-            </div>
-            <div class="col-12 col-xl-6">
-                <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">失败率</div>
-                    <div class="card-body chart-body"><canvas id="failureRateChart"></canvas></div>
-                </div>
-            </div>
-            <div class="col-12 col-xl-6">
-                <div class="card border-0 shadow-sm">
-                    <div class="card-header bg-white fw-semibold">国家统计</div>
-                    <div class="card-body chart-body"><canvas id="countryChart"></canvas></div>
-                </div>
-            </div>
-        </section>
-
-        <section class="card border-0 shadow-sm mb-4">
-            <div class="card-header bg-white fw-semibold">各州代理数量</div>
-            <div class="card-body">
-                <div class="row g-3">
-                    {% for item in dashboard.state_counts %}
-                        <div class="col-6 col-xl-3">
-                            <div class="border rounded bg-light p-3">
-                                <div class="text-secondary small">{{ display_location(item.state) }}</div>
-                                <div class="h3 mb-0">{{ item.count }}</div>
-                            </div>
-                        </div>
-                    {% endfor %}
-                </div>
-            </div>
         </section>
 
         <div class="card border-0 shadow-sm mb-4">
@@ -1099,58 +1058,7 @@ PAGE_TEMPLATE = """
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        const chartData = {{ chart_data|tojson }};
-        const commonChartOptions = {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    labels: { boxWidth: 36, font: { size: 12 } }
-                }
-            }
-        };
-        const lineOptions = {
-            ...commonChartOptions,
-            scales: {
-                x: { ticks: { maxRotation: 0, autoSkip: true } },
-                y: { beginAtZero: true, max: 100 }
-            }
-        };
-        new Chart(document.getElementById("onlineRateChart"), {
-            type: "line",
-            data: { labels: chartData.labels, datasets: [{ label: "在线率 %", data: chartData.online_rates, borderColor: "#0d6efd", tension: 0.25, pointRadius: 2 }] },
-            options: lineOptions
-        });
-        new Chart(document.getElementById("proxyGrowthChart"), {
-            type: "line",
-            data: { labels: chartData.labels, datasets: [{ label: "代理数量", data: chartData.proxy_growth, borderColor: "#198754", tension: 0.25, pointRadius: 2 }] },
-            options: {
-                ...commonChartOptions,
-                scales: {
-                    x: { ticks: { maxRotation: 0, autoSkip: true } },
-                    y: { beginAtZero: true }
-                }
-            }
-        });
-        new Chart(document.getElementById("failureRateChart"), {
-            type: "bar",
-            data: { labels: chartData.labels, datasets: [{ label: "失败率 %", data: chartData.failure_rates, backgroundColor: "#dc3545" }] },
-            options: lineOptions
-        });
-        new Chart(document.getElementById("countryChart"), {
-            type: "doughnut",
-            data: { labels: chartData.country_labels, datasets: [{ data: chartData.country_counts, backgroundColor: ["#0d6efd", "#198754", "#ffc107", "#dc3545", "#6f42c1", "#20c997"] }] },
-            options: {
-                ...commonChartOptions,
-                cutout: "58%",
-                plugins: {
-                    ...commonChartOptions.plugins,
-                    legend: { position: "top", labels: { boxWidth: 28, font: { size: 12 } } }
-                }
-            }
-        });
-    </script>
+
 </body>
 </html>
 """
@@ -1231,6 +1139,138 @@ X-API-Key: {{ example_api_key }}</pre>
                 </div>
             </div>
         </section>
+    </main>
+</body>
+</html>
+"""
+
+ANALYTICS_TEMPLATE = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ProxyManager Analytics</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <style>
+        body { background: #f4f6f9; }
+        .chart-body { height: 260px; padding: 1rem 1.25rem; }
+        .chart-body canvas { width: 100% !important; height: 100% !important; }
+        @media (max-width: 575.98px) {
+            main.container-fluid { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+            .mobile-full { width: 100%; }
+            .chart-body { height: 220px; padding: 0.75rem; }
+        }
+    </style>
+</head>
+<body>
+    <main class="container-fluid px-4 py-4">
+        <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
+            <div>
+                <h1 class="h3 mb-1">&#25968;&#25454;&#20998;&#26512;</h1>
+                <div class="text-secondary">ProxyManager &#36235;&#21183;&#22270;&#12289;&#22269;&#23478;&#32479;&#35745;&#21644;&#21508;&#24030;&#20195;&#29702;&#25968;&#37327;&#12290;</div>
+            </div>
+            <div class="d-flex flex-column flex-sm-row gap-2">
+                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary mobile-full">&#36820;&#22238;&#39318;&#39029;</a>
+            </div>
+        </div>
+
+        <section class="row g-4 mb-4">
+            <div class="col-12 col-xl-6">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">在线率趋势</div>
+                    <div class="card-body chart-body"><canvas id="onlineRateChart"></canvas></div>
+                </div>
+            </div>
+            <div class="col-12 col-xl-6">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">代理增长</div>
+                    <div class="card-body chart-body"><canvas id="proxyGrowthChart"></canvas></div>
+                </div>
+            </div>
+            <div class="col-12 col-xl-6">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">失败率</div>
+                    <div class="card-body chart-body"><canvas id="failureRateChart"></canvas></div>
+                </div>
+            </div>
+            <div class="col-12 col-xl-6">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-header bg-white fw-semibold">国家统计</div>
+                    <div class="card-body chart-body"><canvas id="countryChart"></canvas></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white fw-semibold">各州代理数量</div>
+            <div class="card-body">
+                <div class="row g-3">
+                    {% for item in dashboard.state_counts %}
+                        <div class="col-6 col-xl-3">
+                            <div class="border rounded bg-light p-3">
+                                <div class="text-secondary small">{{ display_location(item.state) }}</div>
+                                <div class="h3 mb-0">{{ item.count }}</div>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+
+    <script>
+        const chartData = {{ chart_data|tojson }};
+        const commonChartOptions = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    labels: { boxWidth: 36, font: { size: 12 } }
+                }
+            }
+        };
+        const lineOptions = {
+            ...commonChartOptions,
+            scales: {
+                x: { ticks: { maxRotation: 0, autoSkip: true } },
+                y: { beginAtZero: true, max: 100 }
+            }
+        };
+        new Chart(document.getElementById("onlineRateChart"), {
+            type: "line",
+            data: { labels: chartData.labels, datasets: [{ label: "在线率 %", data: chartData.online_rates, borderColor: "#0d6efd", tension: 0.25, pointRadius: 2 }] },
+            options: lineOptions
+        });
+        new Chart(document.getElementById("proxyGrowthChart"), {
+            type: "line",
+            data: { labels: chartData.labels, datasets: [{ label: "代理数量", data: chartData.proxy_growth, borderColor: "#198754", tension: 0.25, pointRadius: 2 }] },
+            options: {
+                ...commonChartOptions,
+                scales: {
+                    x: { ticks: { maxRotation: 0, autoSkip: true } },
+                    y: { beginAtZero: true }
+                }
+            }
+        });
+        new Chart(document.getElementById("failureRateChart"), {
+            type: "bar",
+            data: { labels: chartData.labels, datasets: [{ label: "失败率 %", data: chartData.failure_rates, backgroundColor: "#dc3545" }] },
+            options: lineOptions
+        });
+        new Chart(document.getElementById("countryChart"), {
+            type: "doughnut",
+            data: { labels: chartData.country_labels, datasets: [{ data: chartData.country_counts, backgroundColor: ["#0d6efd", "#198754", "#ffc107", "#dc3545", "#6f42c1", "#20c997"] }] },
+            options: {
+                ...commonChartOptions,
+                cutout: "58%",
+                plugins: {
+                    ...commonChartOptions.plugins,
+                    legend: { position: "top", labels: { boxWidth: 28, font: { size: 12 } } }
+                }
+            }
+        });
+    </script>
     </main>
 </body>
 </html>
@@ -3348,7 +3388,6 @@ def index():
         health_level=health_level,
         health_levels=HEALTH_LEVELS,
         UNKNOWN=UNKNOWN,
-        chart_data=build_chart_data(),
         customers=customers(False),
         dashboard=build_dashboard_stats(all_proxies),
         invalid_proxies=[proxy for proxy in all_proxies if proxy["status"] == "invalid"],
@@ -3370,6 +3409,20 @@ def index():
         state_filters=STATE_FILTERS,
         stats=build_stats(proxies),
         top_proxy_ids=top_recommend_proxy_ids(all_proxies),
+    )
+
+
+@app.route("/analytics")
+def analytics_page():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    all_proxies = fetch_proxies()
+    return render_template_string(
+        ANALYTICS_TEMPLATE,
+        chart_data=build_chart_data(),
+        dashboard=build_dashboard_stats(all_proxies),
+        display_location=display_location,
     )
 
 
