@@ -848,16 +848,16 @@ PAGE_TEMPLATE = """
                                 <tr>
                                     <th class="cell-proxy">&#20195;&#29702;</th>
                                     <th class="cell-medium">来源</th>
-                                    <th class="cell-customer">客户</th>
                                     <th class="cell-tiny">类型</th>
                                     <th class="cell-auth">认证状态</th>
                                     <th class="cell-small">成功率</th>
                                     <th class="cell-medium">出口 IP</th>
                                     <th class="cell-small">延迟</th>
+                                    <th class="cell-provider">&#22791;&#27880;</th>
+                                    <th class="cell-customer">客户</th>
                                     <th class="cell-medium">到期时间</th>
                                     <th class="cell-small">剩余天数</th>
                                     <th class="cell-small">有效状态</th>
-                                    <th class="cell-provider">&#22791;&#27880;</th>
                                     <th class="cell-small">最近结果</th>
                                     <th class="cell-small">&#22269;&#23478;</th>
                                     <th class="cell-small">&#24030;</th>
@@ -883,17 +883,6 @@ PAGE_TEMPLATE = """
                                             </div>
                                         </td>
                                         <td><div class="cell-compact" title="{{ proxy.provider_name or 'IPRoyal' }}">{{ proxy.provider_name or "IPRoyal" }}</div></td>
-                                        <td>
-                                            <form action="{{ url_for('assign_proxy_customer', proxy_id=proxy.id) }}" method="post" class="d-flex gap-1">
-                                                <select name="customer_id" class="form-select form-select-sm">
-                                                    <option value="">未分配</option>
-                                                    {% for customer in customers %}
-                                                        <option value="{{ customer.id }}" {% if proxy.customer_id == customer.id %}selected{% endif %}>{{ customer.name }}</option>
-                                                    {% endfor %}
-                                                </select>
-                                                <button class="btn btn-sm btn-outline-primary" type="submit">保存</button>
-                                            </form>
-                                        </td>
                                         <td><span class="badge text-bg-dark">{{ proxy.proxy_type }}</span></td>
                                         <td>
                                             {% set proxy_auth_status = auth_status(proxy) %}
@@ -910,6 +899,18 @@ PAGE_TEMPLATE = """
                                         <td>{{ proxy.success_rate }}%</td>
                                         <td class="proxy-address">{{ proxy.last_exit_ip or proxy.exit_ip or "-" }}</td>
                                         <td>{{ proxy.last_latency_ms or proxy.latency_ms or "-" }}</td>
+                                        <td><div class="cell-compact" title="{{ display_proxy_label(proxy) }}">{{ display_proxy_label(proxy) }}</div></td>
+                                        <td>
+                                            <form action="{{ url_for('assign_proxy_customer', proxy_id=proxy.id) }}" method="post" class="d-flex gap-1">
+                                                <select name="customer_id" class="form-select form-select-sm">
+                                                    <option value="">未分配</option>
+                                                    {% for customer in customers %}
+                                                        <option value="{{ customer.id }}" {% if proxy.customer_id == customer.id %}selected{% endif %}>{{ customer.name }}</option>
+                                                    {% endfor %}
+                                                </select>
+                                                <button class="btn btn-sm btn-outline-primary" type="submit">保存</button>
+                                            </form>
+                                        </td>
                                         <td>
                                             <form action="{{ url_for('update_proxy_expiry', proxy_id=proxy.id) }}" method="post" class="d-flex gap-1">
                                                 <input name="expires_at" class="form-control form-control-sm" value="{{ proxy.expires_at or '' }}" placeholder="YYYY-MM-DD HH:mm:ss">
@@ -927,7 +928,6 @@ PAGE_TEMPLATE = """
                                                 <span class="badge text-bg-success">{{ expiry_status }}</span>
                                             {% endif %}
                                         </td>
-                                        <td><div class="cell-compact" title="{{ display_proxy_label(proxy) }}">{{ display_proxy_label(proxy) }}</div></td>
                                         <td>
                                             {% if proxy.last_connectable is none %}
                                                 <span class="badge rounded-pill text-bg-secondary">&#26410;&#26816;&#27979;</span>
