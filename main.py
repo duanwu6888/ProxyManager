@@ -12,7 +12,7 @@ import ssl
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -45,6 +45,7 @@ IP_API_JSON_URL = "http://ip-api.com/json/{ip}?fields=status,country,regionName,
 UNKNOWN = "Unknown"
 PROXY_TYPES = ("HTTP", "HTTPS", "SOCKS5", "SOCKS4")
 PROTOCOL_STATUSES = ("端口开放", "协议错误", "认证失败", "超时", "连接重置", "无代理服务")
+NODE_STATUSES = ("配置正常", "端口开放", "端口关闭", "解析失败")
 STATE_FILTERS = ("California", "New York", "Texas", "Florida")
 LOCATION_DISPLAY_NAMES = {
     "": "-",
@@ -366,6 +367,9 @@ PAGE_TEMPLATE = """
                 </a>
                 <a href="{{ url_for('analytics_page') }}" class="btn btn-outline-primary mobile-full">
                     &#25968;&#25454;&#20998;&#26512;
+                </a>
+                <a href="{{ url_for('nodes_page') }}" class="btn btn-outline-dark mobile-full">
+                    节点管理
                 </a>
                 <a href="{{ url_for('api_keys_page') }}" class="btn btn-outline-dark mobile-full">
                     API Keys
@@ -1155,6 +1159,155 @@ X-API-Key: {{ example_api_key }}</pre>
 </html>
 """
 
+NODES_TEMPLATE = """
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ProxyManager Nodes</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: #f4f6f9; }
+        .table td, .table th { vertical-align: middle; }
+        .node-table { min-width: 1120px; table-layout: fixed; font-size: 0.86rem; }
+        .cell-compact { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .cell-name { width: 170px; }
+        .cell-small { width: 90px; }
+        .cell-medium { width: 130px; }
+        .cell-large { width: 190px; }
+        .node-url { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; }
+        @media (max-width: 575.98px) {
+            main.container-fluid { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+            .mobile-full { width: 100%; }
+            .node-table { min-width: 980px; font-size: 0.78rem; }
+        }
+    </style>
+</head>
+<body>
+    <main class="container-fluid px-4 py-4">
+        <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
+            <div>
+                <h1 class="h3 mb-1">节点管理</h1>
+                <div class="text-secondary">导入和管理 VLESS / Reality 节点链接，当前只做解析和 TCP 端口检测。</div>
+            </div>
+            <div class="d-flex flex-column flex-sm-row gap-2">
+                <a href="{{ url_for('index') }}" class="btn btn-outline-secondary mobile-full">返回首页</a>
+            </div>
+        </div>
+
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-info">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <section class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white fw-semibold">批量导入 VLESS 节点</div>
+            <div class="card-body">
+                <form action="{{ url_for('import_nodes') }}" method="post" class="vstack gap-3">
+                    <textarea
+                        name="nodes"
+                        class="form-control node-url"
+                        rows="6"
+                        placeholder="vless://uuid@ip:port?security=reality&flow=xtls-rprx-vision&pbk=xxx&sid=xxx&type=tcp&sni=xxx#name"
+                    ></textarea>
+                    <div class="d-flex flex-column flex-sm-row justify-content-between gap-2">
+                        <div class="form-text">每行一个 VLESS 链接。预留 Xray 核心检测和 Clash 配置导出。</div>
+                        <button class="btn btn-primary mobile-full" type="submit">批量导入</button>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <section class="card border-0 shadow-sm">
+            <div class="card-header bg-white d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-2">
+                <div>
+                    <span class="fw-semibold">节点列表</span>
+                    <span class="badge text-bg-light">{{ nodes|length }} items</span>
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 node-table">
+                    <thead class="table-light">
+                        <tr>
+                            <th class="cell-name">名称</th>
+                            <th class="cell-small">协议</th>
+                            <th class="cell-medium">服务器 IP</th>
+                            <th class="cell-small">端口</th>
+                            <th class="cell-large">SNI</th>
+                            <th class="cell-large">Reality</th>
+                            <th class="cell-small">状态</th>
+                            <th class="cell-small">延迟</th>
+                            <th class="cell-medium">最后检测</th>
+                            <th class="cell-medium text-end">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for node in nodes %}
+                            <tr>
+                                <td><div class="cell-compact" title="{{ node.name or '-' }}">{{ node.name or "-" }}</div></td>
+                                <td><span class="badge text-bg-dark">{{ node.protocol or "-" }}</span></td>
+                                <td><div class="cell-compact" title="{{ node.server_ip or '-' }}">{{ node.server_ip or "-" }}</div></td>
+                                <td>{{ node.server_port or "-" }}</td>
+                                <td><div class="cell-compact" title="{{ node.sni or '-' }}">{{ node.sni or "-" }}</div></td>
+                                <td>
+                                    <div class="cell-compact" title="security={{ node.security or '-' }} pbk={{ node.pbk or '-' }} sid={{ node.sid or '-' }} type={{ node.transport_type or '-' }} flow={{ node.flow or '-' }}">
+                                        {{ node.security or "-" }} / {{ node.transport_type or "-" }}
+                                    </div>
+                                </td>
+                                <td><span class="badge {{ node_status_badge_class(node.status) }}">{{ node.status }}</span></td>
+                                <td>{{ node.latency_ms if node.latency_ms is not none else "-" }}</td>
+                                <td>{{ node.last_checked or "-" }}</td>
+                                <td>
+                                    <div class="d-flex justify-content-end gap-1">
+                                        <button class="btn btn-sm btn-outline-secondary copy-node-btn" type="button" data-node-url="{{ node.raw_url }}">复制</button>
+                                        <form action="{{ url_for('check_node_route', node_id=node.id) }}" method="post">
+                                            <button class="btn btn-sm btn-outline-primary" type="submit">检测</button>
+                                        </form>
+                                        <form action="{{ url_for('delete_node', node_id=node.id) }}" method="post" onsubmit="return confirm('删除这个节点？');">
+                                            <button class="btn btn-sm btn-outline-danger" type="submit">删除</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% else %}
+                            <tr>
+                                <td colspan="10" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+    <script>
+        document.querySelectorAll(".copy-node-btn").forEach((button) => {
+            button.addEventListener("click", async () => {
+                const text = button.dataset.nodeUrl || "";
+                try {
+                    await navigator.clipboard.writeText(text);
+                    button.textContent = "已复制";
+                    setTimeout(() => { button.textContent = "复制"; }, 1200);
+                } catch (_error) {
+                    const area = document.createElement("textarea");
+                    area.value = text;
+                    document.body.appendChild(area);
+                    area.select();
+                    document.execCommand("copy");
+                    area.remove();
+                    button.textContent = "已复制";
+                    setTimeout(() => { button.textContent = "复制"; }, 1200);
+                }
+            });
+        });
+    </script>
+</body>
+</html>
+"""
+
 ANALYTICS_TEMPLATE = """
 <!doctype html>
 <html lang="zh-CN">
@@ -1830,6 +1983,26 @@ def init_db() -> None:
                 status INTEGER NOT NULL DEFAULT 200
             );
 
+            CREATE TABLE IF NOT EXISTS nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                protocol TEXT NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                server_ip TEXT NOT NULL DEFAULT '',
+                server_port INTEGER,
+                uuid TEXT NOT NULL DEFAULT '',
+                security TEXT NOT NULL DEFAULT '',
+                flow TEXT NOT NULL DEFAULT '',
+                pbk TEXT NOT NULL DEFAULT '',
+                sid TEXT NOT NULL DEFAULT '',
+                transport_type TEXT NOT NULL DEFAULT '',
+                sni TEXT NOT NULL DEFAULT '',
+                raw_url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT '配置正常',
+                latency_ms INTEGER,
+                created_at TEXT NOT NULL,
+                last_checked TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
@@ -2012,6 +2185,31 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE api_logs ADD COLUMN api_key_id INTEGER")
     if "status" not in log_columns:
         db.execute("ALTER TABLE api_logs ADD COLUMN status INTEGER NOT NULL DEFAULT 200")
+    ensure_table(
+        db,
+        "nodes",
+        """
+        CREATE TABLE IF NOT EXISTS nodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            protocol TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL DEFAULT '',
+            server_ip TEXT NOT NULL DEFAULT '',
+            server_port INTEGER,
+            uuid TEXT NOT NULL DEFAULT '',
+            security TEXT NOT NULL DEFAULT '',
+            flow TEXT NOT NULL DEFAULT '',
+            pbk TEXT NOT NULL DEFAULT '',
+            sid TEXT NOT NULL DEFAULT '',
+            transport_type TEXT NOT NULL DEFAULT '',
+            sni TEXT NOT NULL DEFAULT '',
+            raw_url TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT '配置正常',
+            latency_ms INTEGER,
+            created_at TEXT NOT NULL,
+            last_checked TEXT
+        )
+        """,
+    )
 
 
 def ensure_table(db: sqlite3.Connection, _name: str, ddl: str) -> None:
@@ -2180,6 +2378,81 @@ def tcp_port_status(ip: str, port: int) -> tuple[bool, str]:
         if "reset" in text or "10054" in text:
             return False, "连接重置"
         return False, "无代理服务"
+
+
+def parse_vless_node_url(raw_url: str) -> dict[str, object]:
+    raw_url = raw_url.strip()
+    parsed = urlparse(raw_url)
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        parsed_port = None
+    if parsed.scheme.lower() != "vless" or not parsed.username or not parsed.hostname or not parsed_port:
+        return {
+            "protocol": parsed.scheme.lower() if parsed.scheme else "",
+            "name": "",
+            "server_ip": parsed.hostname or "",
+            "server_port": parsed_port if parsed.hostname and parsed_port else None,
+            "uuid": parsed.username or "",
+            "security": "",
+            "flow": "",
+            "pbk": "",
+            "sid": "",
+            "transport_type": "",
+            "sni": "",
+            "raw_url": raw_url,
+            "status": "解析失败",
+            "latency_ms": None,
+            "last_checked": None,
+        }
+
+    query = parse_qs(parsed.query, keep_blank_values=True)
+
+    def first_value(key: str) -> str:
+        return query.get(key, [""])[0]
+
+    name = unquote(parsed.fragment or "") or f"{parsed.hostname}:{parsed_port}"
+    return {
+        "protocol": parsed.scheme.lower(),
+        "name": name,
+        "server_ip": parsed.hostname,
+        "server_port": parsed_port,
+        "uuid": parsed.username,
+        "security": first_value("security"),
+        "flow": first_value("flow"),
+        "pbk": first_value("pbk"),
+        "sid": first_value("sid"),
+        "transport_type": first_value("type"),
+        "sni": first_value("sni"),
+        "raw_url": raw_url,
+        "status": "配置正常",
+        "latency_ms": None,
+        "last_checked": None,
+    }
+
+
+def check_node_port(node: dict[str, object] | sqlite3.Row) -> tuple[str, int | None, str]:
+    if not node["server_ip"] or not node["server_port"]:
+        return "解析失败", None, current_time()
+    checked_at = current_time()
+    started_at = time.monotonic()
+    try:
+        with socket.create_connection(
+            (str(node["server_ip"]), int(node["server_port"])),
+            timeout=CONNECT_TIMEOUT_SECONDS,
+        ):
+            latency_ms = int((time.monotonic() - started_at) * 1000)
+            return "端口开放", latency_ms, checked_at
+    except OSError:
+        return "端口关闭", None, checked_at
+
+
+def node_status_badge_class(status: str) -> str:
+    if status in {"配置正常", "端口开放"}:
+        return "text-bg-success"
+    if status == "解析失败":
+        return "text-bg-warning"
+    return "text-bg-danger"
 
 
 def protocol_status_from_error(error: BaseException | str, response: requests.Response | None = None) -> str:
@@ -3274,6 +3547,69 @@ def provider_stats() -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def fetch_nodes() -> list[sqlite3.Row]:
+    return get_db().execute(
+        """
+        SELECT *
+        FROM nodes
+        ORDER BY created_at DESC, id DESC
+        """
+    ).fetchall()
+
+
+def insert_node(parsed_node: dict[str, object]) -> bool:
+    now = current_time()
+    try:
+        get_db().execute(
+            """
+            INSERT INTO nodes (
+                protocol, name, server_ip, server_port, uuid, security, flow,
+                pbk, sid, transport_type, sni, raw_url, status, latency_ms,
+                created_at, last_checked
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                parsed_node["protocol"],
+                parsed_node["name"],
+                parsed_node["server_ip"],
+                parsed_node["server_port"],
+                parsed_node["uuid"],
+                parsed_node["security"],
+                parsed_node["flow"],
+                parsed_node["pbk"],
+                parsed_node["sid"],
+                parsed_node["transport_type"],
+                parsed_node["sni"],
+                parsed_node["raw_url"],
+                parsed_node["status"],
+                parsed_node["latency_ms"],
+                now,
+                parsed_node["last_checked"],
+            ),
+        )
+        get_db().commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def update_node_check(node_id: int) -> None:
+    node = get_db().execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+    if node is None:
+        return
+    status, latency_ms, checked_at = check_node_port(node)
+    get_db().execute(
+        """
+        UPDATE nodes
+        SET status = ?, latency_ms = ?, last_checked = ?
+        WHERE id = ?
+        """,
+        (status, latency_ms, checked_at, node_id),
+    )
+    get_db().commit()
+
+
 def customer_stats() -> list[sqlite3.Row]:
     return get_db().execute(
         """
@@ -3693,6 +4029,65 @@ def assign_proxy_customer(proxy_id: int):
     get_db().commit()
     flash("代理客户分配已更新。")
     return redirect(request.referrer or url_for("index"))
+
+
+@app.route("/nodes")
+def nodes_page():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    return render_template_string(
+        NODES_TEMPLATE,
+        nodes=fetch_nodes(),
+        node_status_badge_class=node_status_badge_class,
+    )
+
+
+@app.route("/nodes/import", methods=["POST"])
+def import_nodes():
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    raw_lines = request.form.get("nodes", "").splitlines()
+    imported = 0
+    failed = 0
+    for line in raw_lines:
+        raw_url = line.strip()
+        if not raw_url:
+            continue
+        parsed_node = parse_vless_node_url(raw_url)
+        if parsed_node["status"] != "解析失败":
+            status, latency_ms, checked_at = check_node_port(parsed_node)
+            parsed_node["status"] = status
+            parsed_node["latency_ms"] = latency_ms
+            parsed_node["last_checked"] = checked_at
+        else:
+            failed += 1
+        if insert_node(parsed_node):
+            imported += 1
+    flash(f"导入完成：新增 {imported} 个节点，解析失败 {failed} 个。")
+    return redirect(url_for("nodes_page"))
+
+
+@app.route("/nodes/<int:node_id>/check", methods=["POST"])
+def check_node_route(node_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    update_node_check(node_id)
+    flash("节点检测已完成。")
+    return redirect(url_for("nodes_page"))
+
+
+@app.route("/nodes/<int:node_id>/delete", methods=["POST"])
+def delete_node(node_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    get_db().execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+    get_db().commit()
+    flash("节点已删除。")
+    return redirect(url_for("nodes_page"))
 
 
 @app.route("/providers")
