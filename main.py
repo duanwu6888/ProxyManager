@@ -1191,7 +1191,7 @@ NODES_TEMPLATE = """
     <style>
         body { background: #f4f6f9; }
         .table td, .table th { vertical-align: middle; }
-        .node-table { min-width: 1900px; table-layout: fixed; font-size: 0.84rem; }
+        .node-table { min-width: 1740px; table-layout: fixed; font-size: 0.84rem; }
         .cell-compact { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .cell-name { width: 170px; }
         .cell-small { width: 90px; }
@@ -1201,7 +1201,7 @@ NODES_TEMPLATE = """
         @media (max-width: 575.98px) {
             main.container-fluid { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
             .mobile-full { width: 100%; }
-            .node-table { min-width: 1660px; font-size: 0.76rem; }
+            .node-table { min-width: 1520px; font-size: 0.76rem; }
         }
     </style>
 </head>
@@ -1266,7 +1266,6 @@ NODES_TEMPLATE = """
                             <th class="cell-medium">服务器 IP</th>
                             <th class="cell-small">端口</th>
                             <th class="cell-large">SNI</th>
-                            <th class="cell-large">Reality</th>
                             <th class="cell-small">端口状态</th>
                             <th class="cell-small">真实连接</th>
                             <th class="cell-medium">出口 IP</th>
@@ -1288,11 +1287,6 @@ NODES_TEMPLATE = """
                                 <td><div class="cell-compact" title="{{ node.server_ip or '-' }}">{{ node.server_ip or "-" }}</div></td>
                                 <td>{{ node.server_port or "-" }}</td>
                                 <td><div class="cell-compact" title="{{ node.sni or '-' }}">{{ node.sni or "-" }}</div></td>
-                                <td>
-                                    <div class="cell-compact" title="security={{ node.security or '-' }} pbk={{ node.pbk or '-' }} sid={{ node.sid or '-' }} type={{ node.transport_type or '-' }} flow={{ node.flow or '-' }}">
-                                        {{ node.security or "-" }} / {{ node.transport_type or "-" }}
-                                    </div>
-                                </td>
                                 <td><span class="badge {{ node_status_badge_class(node.status) }}">{{ node.status }}</span></td>
                                 <td><span class="badge {{ node_status_badge_class(node.real_status or '-') }}">{{ node.real_status or "-" }}</span></td>
                                 <td><div class="cell-compact" title="{{ node.exit_ip or '-' }}">{{ node.exit_ip or "-" }}</div></td>
@@ -1317,7 +1311,7 @@ NODES_TEMPLATE = """
                             </tr>
                         {% else %}
                             <tr>
-                                <td colspan="17" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
+                                <td colspan="16" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
                             </tr>
                         {% endfor %}
                     </tbody>
