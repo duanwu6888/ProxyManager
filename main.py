@@ -101,6 +101,8 @@ FAILURE_REASONS = (
 FAILURE_REASON_SUMMARY = ("连接超时", "连接重置", "TLS失败", "出口IP获取失败")
 UNCATEGORIZED_REASON = "未分类"
 INVALID_FAILURE_THRESHOLD = 5
+IP_TYPES = ("Residential", "Datacenter", "Mobile", "ISP", "Unknown")
+RISK_LEVELS = ("低风险", "中风险", "高风险")
 EXPIRY_STATUSES = ("正常", "即将到期", "已过期")
 SCHEDULER_JOB_ID = "proxy_auto_check"
 DEFAULT_SCHEDULE_SECONDS = 300
@@ -137,7 +139,7 @@ PAGE_TEMPLATE = """
 
         .proxy-table {
             table-layout: fixed;
-            min-width: 1520px;
+            min-width: 1760px;
             font-size: 0.82rem;
         }
 
@@ -685,6 +687,26 @@ PAGE_TEMPLATE = """
                             <option value="expired" {% if selected_expiry == 'expired' %}selected{% endif %}>已过期</option>
                         </select>
                     </div>
+                    <div class="col-12 col-md-3">
+                        <label for="ip_type" class="form-label">IP类型</label>
+                        <select id="ip_type" name="ip_type" class="form-select">
+                            <option value="">全部IP类型</option>
+                            <option value="Residential" {% if selected_ip_type == 'Residential' %}selected{% endif %}>住宅IP</option>
+                            <option value="Datacenter" {% if selected_ip_type == 'Datacenter' %}selected{% endif %}>机房IP</option>
+                            <option value="Mobile" {% if selected_ip_type == 'Mobile' %}selected{% endif %}>移动IP</option>
+                            <option value="ISP" {% if selected_ip_type == 'ISP' %}selected{% endif %}>ISP IP</option>
+                            <option value="Unknown" {% if selected_ip_type == 'Unknown' %}selected{% endif %}>Unknown</option>
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-3">
+                        <label for="risk_level" class="form-label">风险等级</label>
+                        <select id="risk_level" name="risk_level" class="form-select">
+                            <option value="">全部风险</option>
+                            {% for level in risk_levels %}
+                                <option value="{{ level }}" {% if selected_risk_level == level %}selected{% endif %}>{{ level }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
                     <div class="col-12 col-md-auto d-flex gap-2">
                         <button type="submit" class="btn btn-outline-primary mobile-full">
                             &#25628;&#32034;
@@ -856,6 +878,9 @@ PAGE_TEMPLATE = """
                                     <th class="cell-auth">认证状态</th>
                                     <th class="cell-small">成功率</th>
                                     <th class="cell-medium">出口 IP</th>
+                                    <th class="cell-small">IP类型</th>
+                                    <th class="cell-small">风控分</th>
+                                    <th class="cell-small">风险等级</th>
                                     <th class="cell-small">延迟</th>
                                     <th class="cell-provider">&#22791;&#27880;</th>
                                     <th class="cell-customer">客户</th>
@@ -902,6 +927,9 @@ PAGE_TEMPLATE = """
                                         </td>
                                         <td>{{ proxy.success_rate }}%</td>
                                         <td class="proxy-address">{{ proxy.last_exit_ip or proxy.exit_ip or "-" }}</td>
+                                        <td><span class="badge {{ ip_type_badge_class(proxy.ip_type) }}">{{ proxy.ip_type or "Unknown" }}</span></td>
+                                        <td>{{ proxy.risk_score if proxy.risk_score is not none else 0 }}</td>
+                                        <td><span class="badge {{ risk_level_badge_class(proxy.risk_level) }}">{{ proxy.risk_level or "低风险" }}</span></td>
                                         <td>{{ proxy.last_latency_ms or proxy.latency_ms or "-" }}</td>
                                         <td><div class="cell-compact" title="{{ display_proxy_label(proxy) }}">{{ display_proxy_label(proxy) }}</div></td>
                                         <td>
@@ -1232,7 +1260,7 @@ NODES_TEMPLATE = """
     <style>
         body { background: #f4f6f9; }
         .table td, .table th { vertical-align: middle; }
-        .node-table { min-width: 2020px; table-layout: fixed; font-size: 0.84rem; }
+        .node-table { min-width: 2380px; table-layout: fixed; font-size: 0.84rem; }
         .cell-compact { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .cell-name { width: 170px; }
         .cell-small { width: 90px; }
@@ -1324,6 +1352,10 @@ NODES_TEMPLATE = """
                             <th class="cell-small">端口状态</th>
                             <th class="cell-small">真实连接</th>
                             <th class="cell-medium">出口 IP</th>
+                            <th class="cell-small">IP类型</th>
+                            <th class="cell-small">风控分</th>
+                            <th class="cell-small">风险等级</th>
+                            <th class="cell-large">风险原因</th>
                             <th class="cell-medium">出口国家</th>
                             <th class="cell-medium">出口州/地区</th>
                             <th class="cell-medium">出口城市</th>
@@ -1356,6 +1388,10 @@ NODES_TEMPLATE = """
                                 <td><span class="badge {{ node_status_badge_class(node.status) }}">{{ node.status }}</span></td>
                                 <td><span class="badge {{ node_status_badge_class(node.real_status or '-') }}">{{ node.real_status or "-" }}</span></td>
                                 <td><div class="cell-compact" title="{{ node.exit_ip or '-' }}">{{ node.exit_ip or "-" }}</div></td>
+                                <td><span class="badge {{ ip_type_badge_class(node.ip_type) }}">{{ node.ip_type or "Unknown" }}</span></td>
+                                <td>{{ node.risk_score if node.risk_score is not none else 0 }}</td>
+                                <td><span class="badge {{ risk_level_badge_class(node.risk_level) }}">{{ node.risk_level or "低风险" }}</span></td>
+                                <td><div class="cell-compact" title="{{ node.risk_reason or '-' }}">{{ node.risk_reason or "-" }}</div></td>
                                 <td><div class="cell-compact" title="{{ node.exit_country or 'Unknown' }}">{{ display_location(node.exit_country) }}</div></td>
                                 <td><div class="cell-compact" title="{{ node.exit_region or 'Unknown' }}">{{ display_location(node.exit_region) }}</div></td>
                                 <td><div class="cell-compact" title="{{ node.exit_city or 'Unknown' }}">{{ display_location(node.exit_city) }}</div></td>
@@ -1377,7 +1413,7 @@ NODES_TEMPLATE = """
                             </tr>
                         {% else %}
                             <tr>
-                                <td colspan="17" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
+                                <td colspan="21" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
                             </tr>
                         {% endfor %}
                     </tbody>
@@ -2089,6 +2125,11 @@ def init_db() -> None:
                 latency_ms INTEGER,
                 isp TEXT NOT NULL DEFAULT '',
                 asn TEXT NOT NULL DEFAULT '',
+                ip_type TEXT NOT NULL DEFAULT 'Unknown',
+                ip_type_source TEXT NOT NULL DEFAULT '',
+                risk_score INTEGER NOT NULL DEFAULT 0,
+                risk_level TEXT NOT NULL DEFAULT '低风险',
+                risk_reason TEXT NOT NULL DEFAULT '',
                 failure_reason TEXT NOT NULL DEFAULT '',
                 protocol_status TEXT NOT NULL DEFAULT '',
                 provider_id INTEGER,
@@ -2169,6 +2210,11 @@ def init_db() -> None:
                 exit_city TEXT NOT NULL DEFAULT 'Unknown',
                 exit_isp TEXT NOT NULL DEFAULT 'Unknown',
                 exit_asn TEXT NOT NULL DEFAULT 'Unknown',
+                ip_type TEXT NOT NULL DEFAULT 'Unknown',
+                ip_type_source TEXT NOT NULL DEFAULT '',
+                risk_score INTEGER NOT NULL DEFAULT 0,
+                risk_level TEXT NOT NULL DEFAULT '低风险',
+                risk_reason TEXT NOT NULL DEFAULT '',
                 customer_id INTEGER,
                 latency_ms INTEGER,
                 real_status TEXT NOT NULL DEFAULT '',
@@ -2262,6 +2308,11 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "latency_ms": "INTEGER",
         "isp": "TEXT NOT NULL DEFAULT ''",
         "asn": "TEXT NOT NULL DEFAULT ''",
+        "ip_type": "TEXT NOT NULL DEFAULT 'Unknown'",
+        "ip_type_source": "TEXT NOT NULL DEFAULT ''",
+        "risk_score": "INTEGER NOT NULL DEFAULT 0",
+        "risk_level": "TEXT NOT NULL DEFAULT '低风险'",
+        "risk_reason": "TEXT NOT NULL DEFAULT ''",
         "failure_reason": "TEXT NOT NULL DEFAULT ''",
         "protocol_status": "TEXT NOT NULL DEFAULT ''",
         "provider_id": "INTEGER",
@@ -2388,6 +2439,11 @@ def ensure_schema(db: sqlite3.Connection) -> None:
             exit_city TEXT NOT NULL DEFAULT 'Unknown',
             exit_isp TEXT NOT NULL DEFAULT 'Unknown',
             exit_asn TEXT NOT NULL DEFAULT 'Unknown',
+            ip_type TEXT NOT NULL DEFAULT 'Unknown',
+            ip_type_source TEXT NOT NULL DEFAULT '',
+            risk_score INTEGER NOT NULL DEFAULT 0,
+            risk_level TEXT NOT NULL DEFAULT '低风险',
+            risk_reason TEXT NOT NULL DEFAULT '',
             customer_id INTEGER,
             latency_ms INTEGER,
             real_status TEXT NOT NULL DEFAULT '',
@@ -2409,6 +2465,11 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "exit_city": "TEXT NOT NULL DEFAULT 'Unknown'",
         "exit_isp": "TEXT NOT NULL DEFAULT 'Unknown'",
         "exit_asn": "TEXT NOT NULL DEFAULT 'Unknown'",
+        "ip_type": "TEXT NOT NULL DEFAULT 'Unknown'",
+        "ip_type_source": "TEXT NOT NULL DEFAULT ''",
+        "risk_score": "INTEGER NOT NULL DEFAULT 0",
+        "risk_level": "TEXT NOT NULL DEFAULT '低风险'",
+        "risk_reason": "TEXT NOT NULL DEFAULT ''",
         "customer_id": "INTEGER",
         "real_status": "TEXT NOT NULL DEFAULT ''",
         "real_latency_ms": "INTEGER",
@@ -2529,6 +2590,193 @@ def current_time() -> str:
 def display_location(value: str | None) -> str:
     text = (value or "").strip()
     return LOCATION_DISPLAY_NAMES.get(text, text or "-")
+
+
+def risk_level_from_score(score: int | float | None) -> str:
+    value = int(score or 0)
+    if value <= 30:
+        return "低风险"
+    if value <= 60:
+        return "中风险"
+    return "高风险"
+
+
+def risk_level_badge_class(level: str | None) -> str:
+    if level == "低风险":
+        return "text-bg-success"
+    if level == "中风险":
+        return "text-bg-warning"
+    if level == "高风险":
+        return "text-bg-danger"
+    return "text-bg-secondary"
+
+
+def ip_type_badge_class(ip_type: str | None) -> str:
+    if ip_type == "Residential":
+        return "text-bg-success"
+    if ip_type == "Mobile":
+        return "text-bg-info"
+    if ip_type == "ISP":
+        return "text-bg-primary"
+    if ip_type == "Datacenter":
+        return "text-bg-warning"
+    return "text-bg-secondary"
+
+
+def text_has_any(text: str, keywords: tuple[str, ...]) -> bool:
+    value = text.lower()
+    return any(keyword in value for keyword in keywords)
+
+
+def as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False
+
+
+def normalize_asn(value: object) -> str:
+    if value is None:
+        return UNKNOWN
+    text = str(value).strip()
+    if not text:
+        return UNKNOWN
+    if text.isdigit():
+        return f"AS{text}"
+    return text
+
+
+def lookup_ipwhois_intelligence(exit_ip: str) -> dict[str, object]:
+    if not exit_ip:
+        return {"ok": False, "source": "ipwho.is skipped: empty exit IP"}
+    try:
+        response = requests.get(IPWHOIS_URL.format(ip=exit_ip), timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        return {"ok": False, "source": f"ipwho.is failed: {exc}"}
+    if not data.get("success", False):
+        return {"ok": False, "source": f"ipwho.is failed: {data.get('message') or 'Unknown error'}"}
+    return {"ok": True, "source": "ipwho.is", "data": data}
+
+
+def detect_ip_type_and_risk(
+    exit_ip: str,
+    isp: str = "",
+    asn: str = "",
+    failures: int = 0,
+    latency_ms: int | float | None = None,
+    ipwhois_result: dict[str, object] | None = None,
+) -> dict[str, object]:
+    intelligence = ipwhois_result or lookup_ipwhois_intelligence(exit_ip)
+    data = intelligence.get("data") if intelligence.get("ok") else {}
+    data = data if isinstance(data, dict) else {}
+    connection = data.get("connection") or {}
+    security = data.get("security") or {}
+    connection_type = str(connection.get("type") or "").strip()
+    org = str(connection.get("org") or "").strip()
+    resolved_isp = str(connection.get("isp") or isp or "").strip()
+    resolved_asn = normalize_asn(connection.get("asn") or asn)
+    security_text = json.dumps(security, ensure_ascii=False, sort_keys=True) if security else ""
+    combined = " ".join(
+        [
+            exit_ip or "",
+            resolved_isp,
+            resolved_asn,
+            org,
+            connection_type,
+            security_text,
+        ]
+    )
+    datacenter_keywords = (
+        "hosting", "cloud", "datacenter", "data center", "server", "colo",
+        "colocation", "cdn", "amazon", "aws", "google cloud", "microsoft",
+        "azure", "digitalocean", "ovh", "hetzner", "linode", "vultr",
+        "oracle", "contabo", "leaseweb", "m247", "interworks networking",
+        "networking services", "dedicated",
+    )
+    mobile_keywords = (
+        "mobile", "wireless", "cellular", "lte", "5g", "4g", "mobility",
+        "t-mobile", "verizon wireless", "at&t mobility", "vodafone",
+        "telefonica mobile", "orange mobile",
+    )
+    residential_keywords = (
+        "residential", "comcast", "charter", "spectrum", "cox", "xfinity",
+        "frontier", "centurylink", "ziply", "bt broadband", "sky broadband",
+        "virgin media",
+    )
+    isp_keywords = (
+        "telecom", "communications", "broadband", "cable", "fiber",
+        "internet service", "isp", "telstra", "deutsche telekom",
+    )
+
+    proxy_security = any(as_bool(security.get(key)) for key in ("proxy", "vpn", "tor", "hosting", "anonymous"))
+    hosting_security = as_bool(security.get("hosting"))
+    if proxy_security or hosting_security or text_has_any(combined, datacenter_keywords):
+        ip_type = "Datacenter"
+    elif text_has_any(combined, mobile_keywords):
+        ip_type = "Mobile"
+    elif text_has_any(combined, residential_keywords):
+        ip_type = "Residential"
+    elif text_has_any(combined, isp_keywords):
+        ip_type = "ISP"
+    else:
+        ip_type = "Unknown"
+
+    score = 0
+    reasons: list[str] = []
+    if ip_type == "Datacenter":
+        score += 40
+        reasons.append("Datacenter +40")
+    elif ip_type == "Mobile":
+        score += 5
+        reasons.append("Mobile +5")
+    elif ip_type == "Residential":
+        reasons.append("Residential +0")
+
+    if proxy_security:
+        score += 40
+        reasons.append("Proxy/VPN/Tor +40")
+    if hosting_security or text_has_any(combined, datacenter_keywords):
+        score += 30
+        reasons.append("Hosting/Cloud ASN +30")
+    if failures >= 2:
+        score += 10
+        reasons.append("多次检测失败 +10")
+    if text_has_any(combined, ("blacklist", "abuse", "spam", "malware", "tor exit")):
+        score += 20
+        reasons.append("黑名单/异常来源 +20")
+    if latency_ms is not None and float(latency_ms) >= 3000:
+        score += 5
+        reasons.append("连接延迟异常高 +5")
+
+    score = min(100, max(0, score))
+    source = str(intelligence.get("source") or "ASN/ISP rules")
+    if not intelligence.get("ok"):
+        source = f"{source}; fallback ASN/ISP rules"
+    if not reasons:
+        reasons.append("未发现明显风险")
+
+    return {
+        "ip_type": ip_type,
+        "ip_type_source": source,
+        "risk_score": score,
+        "risk_level": risk_level_from_score(score),
+        "risk_reason": "; ".join(reasons),
+    }
+
+
+def unknown_ip_risk(reason: str = "") -> dict[str, object]:
+    return {
+        "ip_type": "Unknown",
+        "ip_type_source": reason,
+        "risk_score": 0,
+        "risk_level": "低风险",
+        "risk_reason": reason or "未检测到出口 IP",
+    }
 
 
 def normalize_expires_at(value: str | None) -> tuple[str, str]:
@@ -2691,6 +2939,11 @@ def parse_vless_node_url(raw_url: str) -> dict[str, object]:
             "exit_city": UNKNOWN,
             "exit_isp": UNKNOWN,
             "exit_asn": UNKNOWN,
+            "ip_type": "Unknown",
+            "ip_type_source": "",
+            "risk_score": 0,
+            "risk_level": "低风险",
+            "risk_reason": "",
             "latency_ms": None,
             "real_status": NODE_STATUS_UNAVAILABLE,
             "real_latency_ms": None,
@@ -2725,6 +2978,11 @@ def parse_vless_node_url(raw_url: str) -> dict[str, object]:
         "exit_city": UNKNOWN,
         "exit_isp": UNKNOWN,
         "exit_asn": UNKNOWN,
+        "ip_type": "Unknown",
+        "ip_type_source": "",
+        "risk_score": 0,
+        "risk_level": "低风险",
+        "risk_reason": "",
         "latency_ms": None,
         "real_status": "",
         "real_latency_ms": None,
@@ -2894,18 +3152,15 @@ def unknown_exit_geo(message: str = "") -> dict[str, str]:
     }
 
 
-def query_vless_exit_geo(exit_ip: str) -> dict[str, str]:
+def query_vless_exit_geo(exit_ip: str, ipwhois_result: dict[str, object] | None = None) -> dict[str, str]:
     if not exit_ip:
         return unknown_exit_geo("出口 IP 为空，跳过地理信息查询。")
-    try:
-        response = requests.get(IPWHOIS_URL.format(ip=exit_ip), timeout=10)
-        response.raise_for_status()
-        data = response.json()
-    except Exception as exc:
-        return unknown_exit_geo(f"出口 IP 地理信息查询失败：{exc}")
-
-    if not data.get("success", False):
-        return unknown_exit_geo(f"出口 IP 地理信息查询失败：{data.get('message') or 'Unknown error'}")
+    intelligence = ipwhois_result or lookup_ipwhois_intelligence(exit_ip)
+    if not intelligence.get("ok"):
+        return unknown_exit_geo(str(intelligence.get("source") or "ipwho.is failed"))
+    data = intelligence.get("data") or {}
+    if not isinstance(data, dict):
+        return unknown_exit_geo("出口 IP 地理信息查询失败：Unknown error")
 
     connection = data.get("connection") or {}
     asn_value = connection.get("asn") or data.get("asn") or UNKNOWN
@@ -2994,7 +3249,15 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
                     "check_message": f"{diagnostic}；api.ipify.org 未返回出口 IP。",
                 }
             latency_ms = int((time.monotonic() - started_at) * 1000)
-            geo = query_vless_exit_geo(exit_ip)
+            intelligence = lookup_ipwhois_intelligence(exit_ip)
+            geo = query_vless_exit_geo(exit_ip, intelligence)
+            risk = detect_ip_type_and_risk(
+                exit_ip,
+                isp=geo["exit_isp"],
+                asn=geo["exit_asn"],
+                latency_ms=latency_ms,
+                ipwhois_result=intelligence,
+            )
             return {
                 "real_status": NODE_STATUS_AVAILABLE,
                 "real_latency_ms": latency_ms,
@@ -3004,6 +3267,11 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
                 "exit_city": geo["exit_city"],
                 "exit_isp": geo["exit_isp"],
                 "exit_asn": geo["exit_asn"],
+                "ip_type": risk["ip_type"],
+                "ip_type_source": risk["ip_type_source"],
+                "risk_score": risk["risk_score"],
+                "risk_level": risk["risk_level"],
+                "risk_reason": risk["risk_reason"],
                 "last_checked": checked_at,
                 "check_message": f"{diagnostic}；Xray 检测成功，本地 SOCKS5 端口 127.0.0.1:{socks_port}；{geo['geo_message']}",
             }
@@ -3243,6 +3511,13 @@ def verify_proxy_once(proxy: sqlite3.Row) -> dict[str, object]:
 
         latency_ms = int((datetime.now() - started_at).total_seconds() * 1000)
         location = query_exit_location(exit_ip)
+        risk = detect_ip_type_and_risk(
+            exit_ip,
+            isp=location["isp"],
+            asn=location["asn"],
+            failures=int(proxy["consecutive_failures"] or 0),
+            latency_ms=latency_ms,
+        )
         message = f"proxy verified as {candidate_type}"
         failure_reason = ""
         protocol_status = "端口开放"
@@ -3263,6 +3538,11 @@ def verify_proxy_once(proxy: sqlite3.Row) -> dict[str, object]:
             "city": location["city"],
             "isp": location["isp"],
             "asn": location["asn"],
+            "ip_type": risk["ip_type"],
+            "ip_type_source": risk["ip_type_source"],
+            "risk_score": risk["risk_score"],
+            "risk_level": risk["risk_level"],
+            "risk_reason": risk["risk_reason"],
         }
 
     protocol_status = choose_protocol_status(protocol_statuses, initial_protocol_status)
@@ -3393,6 +3673,11 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
                 latency_ms = ?,
                 isp = ?,
                 asn = ?,
+                ip_type = ?,
+                ip_type_source = ?,
+                risk_score = ?,
+                risk_level = ?,
+                risk_reason = ?,
                 failure_reason = '',
                 protocol_status = ?,
                 updated_at = ?
@@ -3407,6 +3692,11 @@ def run_check(proxy_id: int) -> sqlite3.Row | None:
                 result["latency_ms"],
                 result["isp"],
                 result["asn"],
+                result.get("ip_type", "Unknown"),
+                result.get("ip_type_source", ""),
+                int(result.get("risk_score") or 0),
+                result.get("risk_level", "低风险"),
+                result.get("risk_reason", ""),
                 protocol_status,
                 checked_at,
                 proxy["id"],
@@ -3444,6 +3734,8 @@ def fetch_proxies(
     health_filter: str = "",
     failure_reason_filter: str = "",
     expiry_filter: str = "",
+    ip_type_filter: str = "",
+    risk_level_filter: str = "",
     provider_id: int | None = None,
     customer_id: int | None = None,
     unassigned_only: bool = False,
@@ -3487,6 +3779,12 @@ def fetch_proxies(
         params.extend([now_text, now_text])
     elif expiry_filter == "expired":
         conditions.append("COALESCE(p.is_expired, 0) = 1")
+    if ip_type_filter:
+        conditions.append("COALESCE(p.ip_type, ?) = ?")
+        params.extend(["Unknown", ip_type_filter])
+    if risk_level_filter:
+        conditions.append("COALESCE(p.risk_level, ?) = ?")
+        params.extend(["低风险", risk_level_filter])
     if provider_id:
         conditions.append("p.provider_id = ?")
         params.append(provider_id)
@@ -3867,6 +4165,11 @@ def serialize_proxy(proxy: sqlite3.Row) -> dict[str, object]:
         "latency_ms": proxy["latency_ms"],
         "isp": proxy["isp"] or "",
         "asn": proxy["asn"] or "",
+        "ip_type": proxy["ip_type"] if "ip_type" in proxy.keys() else "Unknown",
+        "ip_type_source": proxy["ip_type_source"] if "ip_type_source" in proxy.keys() else "",
+        "risk_score": proxy["risk_score"] if "risk_score" in proxy.keys() else 0,
+        "risk_level": proxy["risk_level"] if "risk_level" in proxy.keys() else "低风险",
+        "risk_reason": proxy["risk_reason"] if "risk_reason" in proxy.keys() else "",
         "success_rate": proxy["success_rate"],
         "health_level": health_level(proxy["success_rate"]),
         "expires_at": proxy["expires_at"] if "expires_at" in proxy.keys() else "",
@@ -3991,6 +4294,11 @@ def fetch_online_proxies(
             p.latency_ms,
             p.isp,
             p.asn,
+            p.ip_type,
+            p.ip_type_source,
+            p.risk_score,
+            p.risk_level,
+            p.risk_reason,
             p.expires_at,
             p.is_expired,
             p.success_count,
@@ -4175,10 +4483,11 @@ def insert_node(parsed_node: dict[str, object]) -> bool:
                 protocol, name, server_ip, server_port, uuid, security, flow,
                 pbk, sid, transport_type, sni, raw_url, status, latency_ms,
                 exit_ip, exit_country, exit_region, exit_city, exit_isp, exit_asn,
+                ip_type, ip_type_source, risk_score, risk_level, risk_reason,
                 customer_id, real_status, real_latency_ms, check_message, last_message,
                 created_at, last_checked
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 parsed_node["protocol"],
@@ -4201,6 +4510,11 @@ def insert_node(parsed_node: dict[str, object]) -> bool:
                 parsed_node.get("exit_city", UNKNOWN),
                 parsed_node.get("exit_isp", UNKNOWN),
                 parsed_node.get("exit_asn", UNKNOWN),
+                parsed_node.get("ip_type", "Unknown"),
+                parsed_node.get("ip_type_source", ""),
+                int(parsed_node.get("risk_score") or 0),
+                parsed_node.get("risk_level", "低风险"),
+                parsed_node.get("risk_reason", ""),
                 parsed_node.get("customer_id"),
                 parsed_node.get("real_status", ""),
                 parsed_node.get("real_latency_ms"),
@@ -4227,7 +4541,9 @@ def update_node_check(node_id: int) -> None:
             UPDATE nodes
             SET status = ?, latency_ms = ?, real_status = ?, real_latency_ms = NULL,
                 exit_ip = '', exit_country = ?, exit_region = ?, exit_city = ?,
-                exit_isp = ?, exit_asn = ?, check_message = ?, last_message = ?, last_checked = ?
+                exit_isp = ?, exit_asn = ?,
+                ip_type = ?, ip_type_source = ?, risk_score = ?, risk_level = ?, risk_reason = ?,
+                check_message = ?, last_message = ?, last_checked = ?
             WHERE id = ?
             """,
             (
@@ -4239,6 +4555,11 @@ def update_node_check(node_id: int) -> None:
                 UNKNOWN,
                 UNKNOWN,
                 UNKNOWN,
+                "Unknown",
+                f"端口检测结果：{port_status}",
+                0,
+                "低风险",
+                "未获取出口 IP",
                 f"端口检测结果：{port_status}，未执行 Xray 真实出口检测。",
                 f"端口检测结果：{port_status}",
                 port_checked_at,
@@ -4253,7 +4574,9 @@ def update_node_check(node_id: int) -> None:
         UPDATE nodes
         SET status = ?, latency_ms = ?, real_status = ?, real_latency_ms = ?,
             exit_ip = ?, exit_country = ?, exit_region = ?, exit_city = ?,
-            exit_isp = ?, exit_asn = ?, check_message = ?, last_message = ?, last_checked = ?
+            exit_isp = ?, exit_asn = ?,
+            ip_type = ?, ip_type_source = ?, risk_score = ?, risk_level = ?, risk_reason = ?,
+            check_message = ?, last_message = ?, last_checked = ?
         WHERE id = ?
         """,
         (
@@ -4267,6 +4590,11 @@ def update_node_check(node_id: int) -> None:
             result.get("exit_city", UNKNOWN),
             result.get("exit_isp", UNKNOWN),
             result.get("exit_asn", UNKNOWN),
+            result.get("ip_type", "Unknown"),
+            result.get("ip_type_source", ""),
+            int(result.get("risk_score") or 0),
+            result.get("risk_level", "低风险"),
+            result.get("risk_reason", ""),
             result["check_message"],
             result["check_message"],
             result["last_checked"],
@@ -4399,6 +4727,8 @@ def index():
     selected_health = request.args.get("health", "").strip()
     selected_failure_reason = request.args.get("failure_reason", "").strip()
     selected_expiry = request.args.get("expiry", "").strip()
+    selected_ip_type = request.args.get("ip_type", "").strip()
+    selected_risk_level = request.args.get("risk_level", "").strip()
     selected_provider_id = valid_provider_id(request.args.get("provider", "")) if request.args.get("provider") else 0
     selected_customer_filter = request.args.get("customer", "").strip()
     selected_customer_id = 0
@@ -4415,6 +4745,10 @@ def index():
         selected_failure_reason = ""
     if selected_expiry not in {"normal", "expiring", "expired"}:
         selected_expiry = ""
+    if selected_ip_type not in IP_TYPES:
+        selected_ip_type = ""
+    if selected_risk_level not in RISK_LEVELS:
+        selected_risk_level = ""
     all_proxies = fetch_proxies()
     proxies = fetch_proxies(
         query,
@@ -4423,6 +4757,8 @@ def index():
         selected_health,
         selected_failure_reason,
         selected_expiry,
+        selected_ip_type,
+        selected_risk_level,
         selected_provider_id or None,
         selected_customer_id or None,
         unassigned_only,
@@ -4437,6 +4773,8 @@ def index():
         failure_summary_reasons=FAILURE_REASON_SUMMARY,
         health_level=health_level,
         health_levels=HEALTH_LEVELS,
+        ip_type_badge_class=ip_type_badge_class,
+        ip_types=IP_TYPES,
         UNKNOWN=UNKNOWN,
         customers=customers(False),
         dashboard=build_dashboard_stats(all_proxies),
@@ -4450,10 +4788,14 @@ def index():
         proxy_remaining_days=proxy_remaining_days,
         recommend_score=recommend_score,
         recent_checks=fetch_recent_checks(),
+        risk_level_badge_class=risk_level_badge_class,
+        risk_levels=RISK_LEVELS,
         scheduler_config=scheduler_settings(),
         selected_failure_reason=selected_failure_reason,
         selected_health=selected_health,
         selected_expiry=selected_expiry,
+        selected_ip_type=selected_ip_type,
+        selected_risk_level=selected_risk_level,
         selected_customer_filter=selected_customer_filter,
         selected_customer_id=selected_customer_id,
         selected_provider_id=selected_provider_id,
@@ -4765,8 +5107,10 @@ def nodes_page():
         NODES_TEMPLATE,
         nodes=fetch_nodes(),
         customers=customers(False),
+        ip_type_badge_class=ip_type_badge_class,
         node_status_badge_class=node_status_badge_class,
         display_location=display_location,
+        risk_level_badge_class=risk_level_badge_class,
         xray_available=is_xray_available(),
     )
 
@@ -4814,6 +5158,11 @@ def import_nodes():
                 parsed_node["exit_city"] = xray_result.get("exit_city", UNKNOWN)
                 parsed_node["exit_isp"] = xray_result.get("exit_isp", UNKNOWN)
                 parsed_node["exit_asn"] = xray_result.get("exit_asn", UNKNOWN)
+                parsed_node["ip_type"] = xray_result.get("ip_type", "Unknown")
+                parsed_node["ip_type_source"] = xray_result.get("ip_type_source", "")
+                parsed_node["risk_score"] = xray_result.get("risk_score", 0)
+                parsed_node["risk_level"] = xray_result.get("risk_level", "低风险")
+                parsed_node["risk_reason"] = xray_result.get("risk_reason", "")
                 parsed_node["check_message"] = xray_result["check_message"]
                 parsed_node["last_message"] = xray_result["check_message"]
                 parsed_node["last_checked"] = xray_result["last_checked"]
@@ -4825,6 +5174,11 @@ def import_nodes():
                 parsed_node["exit_city"] = UNKNOWN
                 parsed_node["exit_isp"] = UNKNOWN
                 parsed_node["exit_asn"] = UNKNOWN
+                parsed_node["ip_type"] = "Unknown"
+                parsed_node["ip_type_source"] = f"端口检测结果：{status}"
+                parsed_node["risk_score"] = 0
+                parsed_node["risk_level"] = "低风险"
+                parsed_node["risk_reason"] = "未获取出口 IP"
         else:
             failed += 1
         if insert_node(parsed_node):
