@@ -563,33 +563,6 @@ PAGE_TEMPLATE = """
         </section>
 
         <section class="row g-3 mb-4">
-            <div class="col-12 col-xl-4">
-                <div class="card dashboard-card border-0 shadow-sm">
-                    <div class="card-body">
-                        <div class="text-secondary small">Top Provider</div>
-                        <div class="fw-semibold text-break">{{ dashboard.top_provider or "-" }}</div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-6 col-xl-4">
-                <div class="card dashboard-card border-0 shadow-sm">
-                    <div class="card-body">
-                        <div class="text-secondary small">Provider Success Rate</div>
-                        <div class="h3 mb-0">{{ dashboard.provider_success_rate }}%</div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-6 col-xl-4">
-                <div class="card dashboard-card border-0 shadow-sm">
-                    <div class="card-body">
-                        <div class="text-secondary small">Provider Latency</div>
-                        <div class="h3 mb-0">{{ dashboard.provider_latency }} ms</div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <section class="row g-3 mb-4">
             {% for reason in failure_summary_reasons %}
                 <div class="col-6 col-xl-3">
                     <div class="card dashboard-card border-0 shadow-sm">
@@ -1213,6 +1186,33 @@ ANALYTICS_TEMPLATE = """
                 <a href="{{ url_for('index') }}" class="btn btn-outline-secondary mobile-full">&#36820;&#22238;&#39318;&#39029;</a>
             </div>
         </div>
+
+        <section class="row g-3 mb-4">
+            <div class="col-12 col-xl-4">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Top Provider</div>
+                        <div class="fw-semibold text-break">{{ dashboard.top_provider or "-" }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-xl-4">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Provider Success Rate</div>
+                        <div class="h3 mb-0">{{ dashboard.provider_success_rate }}%</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-xl-4">
+                <div class="card border-0 shadow-sm">
+                    <div class="card-body">
+                        <div class="text-secondary small">Provider Latency</div>
+                        <div class="h3 mb-0">{{ dashboard.provider_latency }} ms</div>
+                    </div>
+                </div>
+            </div>
+        </section>
 
         <section class="row g-4 mb-4">
             <div class="col-12 col-xl-6">
