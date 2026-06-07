@@ -901,32 +901,30 @@ PAGE_TEMPLATE = """
                                         <td>{{ proxy.last_latency_ms or proxy.latency_ms or "-" }}</td>
                                         <td><div class="cell-compact" title="{{ display_proxy_label(proxy) }}">{{ display_proxy_label(proxy) }}</div></td>
                                         <td>
-                                            <form action="{{ url_for('assign_proxy_customer', proxy_id=proxy.id) }}" method="post" class="d-flex gap-1">
-                                                <select name="customer_id" class="form-select form-select-sm">
-                                                    <option value="">未分配</option>
-                                                    {% for customer in customers %}
-                                                        <option value="{{ customer.id }}" {% if proxy.customer_id == customer.id %}selected{% endif %}>{{ customer.name }}</option>
-                                                    {% endfor %}
-                                                </select>
-                                                <button class="btn btn-sm btn-outline-primary" type="submit">保存</button>
-                                            </form>
+                                            <form id="proxy-settings-{{ proxy.id }}" action="{{ url_for('update_proxy_settings', proxy_id=proxy.id) }}" method="post"></form>
+                                            <select form="proxy-settings-{{ proxy.id }}" name="customer_id" class="form-select form-select-sm">
+                                                <option value="">未分配</option>
+                                                {% for customer in customers %}
+                                                    <option value="{{ customer.id }}" {% if proxy.customer_id == customer.id %}selected{% endif %}>{{ customer.name }}</option>
+                                                {% endfor %}
+                                            </select>
                                         </td>
                                         <td>
-                                            <form action="{{ url_for('update_proxy_expiry', proxy_id=proxy.id) }}" method="post" class="d-flex gap-1">
-                                                <input name="expires_at" class="form-control form-control-sm" value="{{ proxy.expires_at or '' }}" placeholder="YYYY-MM-DD HH:mm:ss">
-                                                <button class="btn btn-sm btn-outline-primary" type="submit">保存</button>
-                                            </form>
+                                            <input form="proxy-settings-{{ proxy.id }}" name="expires_at" class="form-control form-control-sm" value="{{ proxy.expires_at or '' }}" placeholder="YYYY-MM-DD HH:mm:ss">
                                         </td>
                                         <td>{{ proxy_remaining_days(proxy.expires_at) }}</td>
                                         <td>
-                                            {% set expiry_status = proxy_expiry_status(proxy) %}
-                                            {% if expiry_status == '已过期' %}
-                                                <span class="badge text-bg-danger">{{ expiry_status }}</span>
-                                            {% elif expiry_status == '即将到期' %}
-                                                <span class="badge text-bg-warning">{{ expiry_status }}</span>
-                                            {% else %}
-                                                <span class="badge text-bg-success">{{ expiry_status }}</span>
-                                            {% endif %}
+                                            <div class="d-flex align-items-center gap-2">
+                                                {% set expiry_status = proxy_expiry_status(proxy) %}
+                                                {% if expiry_status == '已过期' %}
+                                                    <span class="badge text-bg-danger">{{ expiry_status }}</span>
+                                                {% elif expiry_status == '即将到期' %}
+                                                    <span class="badge text-bg-warning">{{ expiry_status }}</span>
+                                                {% else %}
+                                                    <span class="badge text-bg-success">{{ expiry_status }}</span>
+                                                {% endif %}
+                                                <button form="proxy-settings-{{ proxy.id }}" class="btn btn-sm btn-outline-primary" type="submit">保存</button>
+                                            </div>
                                         </td>
                                         <td>
                                             {% if proxy.last_connectable is none %}
@@ -4706,6 +4704,29 @@ def assign_proxy_customer(proxy_id: int):
     )
     get_db().commit()
     flash("代理客户分配已更新。")
+    return redirect(request.referrer or url_for("index"))
+
+
+@app.route("/proxies/<int:proxy_id>/settings", methods=["POST"])
+def update_proxy_settings(proxy_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    customer_id = valid_customer_id(request.form.get("customer_id", "")) if request.form.get("customer_id") else None
+    expires_at, error = normalize_expires_at(request.form.get("expires_at", ""))
+    if error:
+        flash(error)
+        return redirect(request.referrer or url_for("index"))
+    get_db().execute(
+        """
+        UPDATE proxies
+        SET customer_id = ?, expires_at = ?, is_expired = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (customer_id, expires_at, proxy_is_expired_value(expires_at), current_time(), proxy_id),
+    )
+    get_db().commit()
+    flash("代理客户和到期时间已更新。")
     return redirect(request.referrer or url_for("index"))
 
 
