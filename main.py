@@ -101,6 +101,7 @@ FAILURE_REASONS = (
 FAILURE_REASON_SUMMARY = ("连接超时", "连接重置", "TLS失败", "出口IP获取失败")
 UNCATEGORIZED_REASON = "未分类"
 INVALID_FAILURE_THRESHOLD = 5
+EXPIRY_STATUSES = ("正常", "即将到期", "已过期")
 SCHEDULER_JOB_ID = "proxy_auto_check"
 DEFAULT_SCHEDULE_SECONDS = 300
 scheduler = BackgroundScheduler(daemon=True)
@@ -136,7 +137,7 @@ PAGE_TEMPLATE = """
 
         .proxy-table {
             table-layout: fixed;
-            min-width: 1160px;
+            min-width: 1520px;
             font-size: 0.82rem;
         }
 
@@ -343,7 +344,7 @@ PAGE_TEMPLATE = """
             }
 
             .proxy-table {
-                min-width: 1080px;
+                min-width: 1400px;
                 font-size: 0.78rem;
             }
 
@@ -671,6 +672,15 @@ PAGE_TEMPLATE = """
                             {% endfor %}
                         </select>
                     </div>
+                    <div class="col-12 col-md-3">
+                        <label for="expiry" class="form-label">有效状态</label>
+                        <select id="expiry" name="expiry" class="form-select">
+                            <option value="">全部</option>
+                            <option value="normal" {% if selected_expiry == 'normal' %}selected{% endif %}>正常</option>
+                            <option value="expiring" {% if selected_expiry == 'expiring' %}selected{% endif %}>即将到期</option>
+                            <option value="expired" {% if selected_expiry == 'expired' %}selected{% endif %}>已过期</option>
+                        </select>
+                    </div>
                     <div class="col-12 col-md-auto d-flex gap-2">
                         <button type="submit" class="btn btn-outline-primary mobile-full">
                             &#25628;&#32034;
@@ -756,6 +766,15 @@ PAGE_TEMPLATE = """
                                     placeholder="DNS / HTTP Proxy"
                                 >
                             </div>
+                            <div class="col-12 col-md-4 col-xl-2">
+                                <label for="expires_at" class="form-label">到期时间</label>
+                                <input
+                                    id="expires_at"
+                                    name="expires_at"
+                                    class="form-control"
+                                    placeholder="YYYY-MM-DD HH:mm:ss"
+                                >
+                            </div>
                             <div class="col-12 col-md-auto">
                                 <button type="submit" class="btn btn-primary mobile-full">
                                     &#28155;&#21152;&#20195;&#29702;
@@ -785,11 +804,11 @@ PAGE_TEMPLATE = """
                                 name="proxies"
                                 class="form-control"
                                 rows="5"
-                                placeholder="8.8.8.8:53&#10;1.1.1.1,53,DNS&#10;208.67.222.222 53 OpenDNS&#10;proxy.example.com:12345:user:pass"
+                                placeholder="8.8.8.8:53&#10;1.1.1.1,53,DNS&#10;208.67.222.222 53 OpenDNS&#10;proxy.example.com:12345:user:pass&#10;168.158.86.30:12324:user:pass:2026-07-08 23:59:59"
                             ></textarea>
                             <div class="d-flex flex-column flex-sm-row justify-content-between gap-2">
                                 <div class="form-text">
-                                    &#27599;&#34892;&#19968;&#20010;&#20195;&#29702;&#65292;&#25903;&#25345; IP:PORT&#12289;IP,PORT,备注&#12289;IP PORT 备注 或 IP:PORT:USER:PASS。
+                                    &#27599;&#34892;&#19968;&#20010;&#20195;&#29702;&#65292;&#25903;&#25345; IP:PORT&#12289;IP,PORT,备注&#12289;IP PORT 备注、IP:PORT:USER:PASS 或 IP:PORT:USER:PASS:EXPIRES_AT。
                                 </div>
                                 <button type="submit" class="btn btn-primary mobile-full">
                                     &#25209;&#37327;&#23548;&#20837;
@@ -835,6 +854,9 @@ PAGE_TEMPLATE = """
                                     <th class="cell-small">成功率</th>
                                     <th class="cell-medium">出口 IP</th>
                                     <th class="cell-small">延迟</th>
+                                    <th class="cell-medium">到期时间</th>
+                                    <th class="cell-small">剩余天数</th>
+                                    <th class="cell-small">有效状态</th>
                                     <th class="cell-provider">&#22791;&#27880;</th>
                                     <th class="cell-small">最近结果</th>
                                     <th class="cell-small">&#22269;&#23478;</th>
@@ -888,6 +910,23 @@ PAGE_TEMPLATE = """
                                         <td>{{ proxy.success_rate }}%</td>
                                         <td class="proxy-address">{{ proxy.last_exit_ip or proxy.exit_ip or "-" }}</td>
                                         <td>{{ proxy.last_latency_ms or proxy.latency_ms or "-" }}</td>
+                                        <td>
+                                            <form action="{{ url_for('update_proxy_expiry', proxy_id=proxy.id) }}" method="post" class="d-flex gap-1">
+                                                <input name="expires_at" class="form-control form-control-sm" value="{{ proxy.expires_at or '' }}" placeholder="YYYY-MM-DD HH:mm:ss">
+                                                <button class="btn btn-sm btn-outline-primary" type="submit">保存</button>
+                                            </form>
+                                        </td>
+                                        <td>{{ proxy_remaining_days(proxy.expires_at) }}</td>
+                                        <td>
+                                            {% set expiry_status = proxy_expiry_status(proxy) %}
+                                            {% if expiry_status == '已过期' %}
+                                                <span class="badge text-bg-danger">{{ expiry_status }}</span>
+                                            {% elif expiry_status == '即将到期' %}
+                                                <span class="badge text-bg-warning">{{ expiry_status }}</span>
+                                            {% else %}
+                                                <span class="badge text-bg-success">{{ expiry_status }}</span>
+                                            {% endif %}
+                                        </td>
                                         <td><div class="cell-compact" title="{{ display_proxy_label(proxy) }}">{{ display_proxy_label(proxy) }}</div></td>
                                         <td>
                                             {% if proxy.last_connectable is none %}
@@ -2052,6 +2091,8 @@ def init_db() -> None:
                 protocol_status TEXT NOT NULL DEFAULT '',
                 provider_id INTEGER,
                 customer_id INTEGER,
+                expires_at TEXT NOT NULL DEFAULT '',
+                is_expired INTEGER NOT NULL DEFAULT 0,
                 label TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -2223,6 +2264,8 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         "protocol_status": "TEXT NOT NULL DEFAULT ''",
         "provider_id": "INTEGER",
         "customer_id": "INTEGER",
+        "expires_at": "TEXT NOT NULL DEFAULT ''",
+        "is_expired": "INTEGER NOT NULL DEFAULT 0",
     }
     for column, definition in proxy_column_defaults.items():
         if column not in columns:
@@ -2484,6 +2527,69 @@ def current_time() -> str:
 def display_location(value: str | None) -> str:
     text = (value or "").strip()
     return LOCATION_DISPLAY_NAMES.get(text, text or "-")
+
+
+def normalize_expires_at(value: str | None) -> tuple[str, str]:
+    text = (value or "").strip()
+    if not text:
+        return "", ""
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return "", "有效期格式必须为 YYYY-MM-DD HH:mm:ss。"
+    return parsed.strftime("%Y-%m-%d %H:%M:%S"), ""
+
+
+def proxy_expiry_status_value(expires_at: str | None) -> str:
+    text = (expires_at or "").strip()
+    if not text:
+        return "正常"
+    try:
+        expires = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return "正常"
+    seconds_left = (expires - datetime.now()).total_seconds()
+    if seconds_left < 0:
+        return "已过期"
+    if seconds_left < 3 * 24 * 60 * 60:
+        return "即将到期"
+    return "正常"
+
+
+def proxy_is_expired_value(expires_at: str | None) -> int:
+    return 1 if proxy_expiry_status_value(expires_at) == "已过期" else 0
+
+
+def proxy_remaining_days(expires_at: str | None) -> str:
+    text = (expires_at or "").strip()
+    if not text:
+        return "-"
+    try:
+        expires = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return "-"
+    seconds_left = (expires - datetime.now()).total_seconds()
+    if seconds_left < 0:
+        return "已过期"
+    return str(max(0, int(seconds_left // (24 * 60 * 60))))
+
+
+def proxy_expiry_status(proxy: sqlite3.Row | dict[str, object]) -> str:
+    return proxy_expiry_status_value(proxy["expires_at"] if "expires_at" in proxy.keys() else "")
+
+
+def sync_proxy_expiration_flags() -> None:
+    get_db().execute(
+        """
+        UPDATE proxies
+        SET is_expired = CASE
+            WHEN COALESCE(expires_at, '') != '' AND expires_at < ? THEN 1
+            ELSE 0
+        END
+        """,
+        (current_time(),),
+    )
+    get_db().commit()
 
 
 def display_proxy_label(proxy: sqlite3.Row | dict[str, object]) -> str:
@@ -3063,6 +3169,8 @@ def latency_recommend_score(latency_ms: int | float | None) -> float:
 
 
 def recommend_score(proxy: sqlite3.Row | dict[str, object]) -> float:
+    if "is_expired" in proxy.keys() and proxy["is_expired"]:
+        return 0
     success_rate = float(proxy["success_rate"] or 0)
     latency_ms = proxy["latency_ms"]
     if "last_latency_ms" in proxy.keys() and proxy["last_latency_ms"] is not None:
@@ -3333,10 +3441,12 @@ def fetch_proxies(
     sort_by: str = "",
     health_filter: str = "",
     failure_reason_filter: str = "",
+    expiry_filter: str = "",
     provider_id: int | None = None,
     customer_id: int | None = None,
     unassigned_only: bool = False,
 ) -> list[sqlite3.Row]:
+    sync_proxy_expiration_flags()
     where = ""
     params: list[str] = []
     conditions: list[str] = []
@@ -3365,6 +3475,16 @@ def fetch_proxies(
     if failure_reason_filter:
         conditions.append("COALESCE(NULLIF(c.failure_reason, ''), NULLIF(p.failure_reason, '')) = ?")
         params.append(failure_reason_filter)
+    if expiry_filter == "normal":
+        conditions.append("(COALESCE(p.expires_at, '') = '' OR (p.expires_at >= ? AND p.expires_at >= datetime(?, '+3 days')))")
+        now_text = current_time()
+        params.extend([now_text, now_text])
+    elif expiry_filter == "expiring":
+        conditions.append("COALESCE(p.expires_at, '') != '' AND p.expires_at >= ? AND p.expires_at < datetime(?, '+3 days')")
+        now_text = current_time()
+        params.extend([now_text, now_text])
+    elif expiry_filter == "expired":
+        conditions.append("COALESCE(p.is_expired, 0) = 1")
     if provider_id:
         conditions.append("p.provider_id = ?")
         params.append(provider_id)
@@ -3486,7 +3606,7 @@ def recommend_ranked_proxies(proxies: list[sqlite3.Row]) -> list[sqlite3.Row]:
 def top_recommend_proxy_ids(proxies: list[sqlite3.Row], limit: int = 10) -> set[int]:
     candidates = [
         proxy for proxy in proxies
-        if proxy["last_connectable"] == 1 and proxy["status"] == "online"
+        if proxy["last_connectable"] == 1 and proxy["status"] == "online" and not proxy["is_expired"]
     ]
     return {proxy["id"] for proxy in recommend_ranked_proxies(candidates)[:limit]}
 
@@ -3558,7 +3678,7 @@ def build_dashboard_stats(proxies: list[sqlite3.Row]) -> dict[str, object]:
 
     best_proxy_candidates = [
         proxy for proxy in proxies
-        if proxy["last_connectable"] == 1 and proxy["status"] == "online"
+        if proxy["last_connectable"] == 1 and proxy["status"] == "online" and not proxy["is_expired"]
     ]
     best_proxy = recommend_ranked_proxies(best_proxy_candidates)[0] if best_proxy_candidates else None
 
@@ -3667,7 +3787,15 @@ def build_chart_data() -> dict[str, list]:
 
 
 def run_all_checks() -> int:
-    proxies = get_db().execute("SELECT id FROM proxies ORDER BY id").fetchall()
+    sync_proxy_expiration_flags()
+    proxies = get_db().execute(
+        """
+        SELECT id
+        FROM proxies
+        WHERE COALESCE(is_expired, 0) = 0
+        ORDER BY id
+        """
+    ).fetchall()
     for proxy in proxies:
         run_check(proxy["id"])
     return len(proxies)
@@ -3739,6 +3867,8 @@ def serialize_proxy(proxy: sqlite3.Row) -> dict[str, object]:
         "asn": proxy["asn"] or "",
         "success_rate": proxy["success_rate"],
         "health_level": health_level(proxy["success_rate"]),
+        "expires_at": proxy["expires_at"] if "expires_at" in proxy.keys() else "",
+        "expiry_status": proxy_expiry_status_value(proxy["expires_at"] if "expires_at" in proxy.keys() else ""),
         "failure_reason": proxy["failure_reason"] if "failure_reason" in proxy.keys() else "",
         "recommend_score": recommend_score(proxy),
         "score": proxy["score"],
@@ -3823,7 +3953,8 @@ def fetch_online_proxies(
     provider: str | None = None,
     customer_id: int | None = None,
 ) -> list[sqlite3.Row]:
-    conditions = ["c.connectable = 1", "p.status = 'online'"]
+    sync_proxy_expiration_flags()
+    conditions = ["c.connectable = 1", "p.status = 'online'", "COALESCE(p.is_expired, 0) = 0"]
     params: list[str] = []
     if country is not None:
         conditions.append("LOWER(c.country) = LOWER(?)")
@@ -3858,6 +3989,8 @@ def fetch_online_proxies(
             p.latency_ms,
             p.isp,
             p.asn,
+            p.expires_at,
+            p.is_expired,
             p.success_count,
             p.failure_count,
             c.country,
@@ -4162,7 +4295,7 @@ def customer_stats() -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def parse_proxy_line(line: str) -> tuple[str, str, str, str, str, str] | None:
+def parse_proxy_line(line: str) -> tuple[str, str, str, str, str, str, str] | None:
     cleaned = line.strip()
     if not cleaned or cleaned.startswith("#"):
         return None
@@ -4170,11 +4303,13 @@ def parse_proxy_line(line: str) -> tuple[str, str, str, str, str, str] | None:
     label = ""
     username = ""
     password = ""
-    colon_parts = cleaned.split(":")
-    if len(colon_parts) == 4 and " " not in cleaned and "," not in cleaned:
-        ip, port_text, username, password = [part.strip() for part in colon_parts]
+    expires_at = ""
+    colon_parts = cleaned.split(":", 4)
+    if len(colon_parts) >= 4 and "," not in cleaned:
+        ip, port_text, username, password = [part.strip() for part in colon_parts[:4]]
+        expires_at = colon_parts[4].strip() if len(colon_parts) == 5 else ""
         label = "IPRoyal SOCKS5 认证代理"
-        return ip, port_text, "SOCKS5", label, username, password
+        return ip, port_text, "SOCKS5", label, username, password, expires_at
 
     if "," in cleaned:
         parts = [part.strip() for part in cleaned.split(",", 3)]
@@ -4185,11 +4320,11 @@ def parse_proxy_line(line: str) -> tuple[str, str, str, str, str, str] | None:
             if len(parts) == 3 and parts[2].upper() not in PROXY_TYPES:
                 proxy_type = "HTTP"
                 label = parts[2]
-            return ip, port_text, proxy_type, label, username, password
+            return ip, port_text, proxy_type, label, username, password, expires_at
 
     if ":" in cleaned and " " not in cleaned:
         ip, port_text = cleaned.rsplit(":", 1)
-        return ip.strip(), port_text.strip(), "HTTP", label, username, password
+        return ip.strip(), port_text.strip(), "HTTP", label, username, password, expires_at
 
     parts = cleaned.split(maxsplit=3)
     if len(parts) >= 2:
@@ -4199,7 +4334,7 @@ def parse_proxy_line(line: str) -> tuple[str, str, str, str, str, str] | None:
         if len(parts) == 3 and parts[2].upper() not in PROXY_TYPES:
             proxy_type = "HTTP"
             label = parts[2]
-        return ip, port_text, proxy_type, label, username, password
+        return ip, port_text, proxy_type, label, username, password, expires_at
 
     return None
 
@@ -4210,7 +4345,7 @@ def normalize_proxy_type(value: str) -> str:
 
 
 def insert_proxy(ip: str, port: int, proxy_type: str, label: str) -> bool:
-    return insert_proxy_with_provider(ip, port, proxy_type, label, 1, "", "")
+    return insert_proxy_with_provider(ip, port, proxy_type, label, 1, "", "", "")
 
 
 def insert_proxy_with_provider(
@@ -4221,13 +4356,15 @@ def insert_proxy_with_provider(
     provider_id: int,
     username: str = "",
     password: str = "",
+    expires_at: str = "",
 ) -> bool:
     now = current_time()
+    is_expired = proxy_is_expired_value(expires_at)
     try:
         get_db().execute(
             """
-            INSERT INTO proxies (ip, port, proxy_type, provider_id, username, password, label, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO proxies (ip, port, proxy_type, provider_id, username, password, expires_at, is_expired, label, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ip,
@@ -4236,6 +4373,8 @@ def insert_proxy_with_provider(
                 provider_id,
                 username.strip(),
                 password,
+                expires_at,
+                is_expired,
                 label,
                 now,
                 now,
@@ -4257,6 +4396,7 @@ def index():
     selected_sort = request.args.get("sort", "").strip()
     selected_health = request.args.get("health", "").strip()
     selected_failure_reason = request.args.get("failure_reason", "").strip()
+    selected_expiry = request.args.get("expiry", "").strip()
     selected_provider_id = valid_provider_id(request.args.get("provider", "")) if request.args.get("provider") else 0
     selected_customer_filter = request.args.get("customer", "").strip()
     selected_customer_id = 0
@@ -4271,6 +4411,8 @@ def index():
         selected_health = ""
     if selected_failure_reason not in FAILURE_REASONS:
         selected_failure_reason = ""
+    if selected_expiry not in {"normal", "expiring", "expired"}:
+        selected_expiry = ""
     all_proxies = fetch_proxies()
     proxies = fetch_proxies(
         query,
@@ -4278,6 +4420,7 @@ def index():
         selected_sort,
         selected_health,
         selected_failure_reason,
+        selected_expiry,
         selected_provider_id or None,
         selected_customer_id or None,
         unassigned_only,
@@ -4301,11 +4444,14 @@ def index():
         providers=source_providers(),
         proxy_check_map=proxy_check_map,
         proxies=proxies,
+        proxy_expiry_status=proxy_expiry_status,
+        proxy_remaining_days=proxy_remaining_days,
         recommend_score=recommend_score,
         recent_checks=fetch_recent_checks(),
         scheduler_config=scheduler_settings(),
         selected_failure_reason=selected_failure_reason,
         selected_health=selected_health,
+        selected_expiry=selected_expiry,
         selected_customer_filter=selected_customer_filter,
         selected_customer_id=selected_customer_id,
         selected_provider_id=selected_provider_id,
@@ -4563,6 +4709,28 @@ def assign_proxy_customer(proxy_id: int):
     return redirect(request.referrer or url_for("index"))
 
 
+@app.route("/proxies/<int:proxy_id>/expiry", methods=["POST"])
+def update_proxy_expiry(proxy_id: int):
+    auth_redirect = login_required()
+    if auth_redirect:
+        return auth_redirect
+    expires_at, error = normalize_expires_at(request.form.get("expires_at", ""))
+    if error:
+        flash(error)
+        return redirect(request.referrer or url_for("index"))
+    get_db().execute(
+        """
+        UPDATE proxies
+        SET expires_at = ?, is_expired = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (expires_at, proxy_is_expired_value(expires_at), current_time(), proxy_id),
+    )
+    get_db().commit()
+    flash("代理到期时间已更新。")
+    return redirect(request.referrer or url_for("index"))
+
+
 @app.route("/nodes")
 def nodes_page():
     auth_redirect = login_required()
@@ -4764,6 +4932,7 @@ def create_proxy():
     label = request.form.get("label", "").strip()
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
+    expires_at, expires_error = normalize_expires_at(request.form.get("expires_at", ""))
     proxy_type = normalize_proxy_type(request.form.get("proxy_type", "HTTP"))
     provider_id = valid_provider_id(request.form.get("provider_id", "1"))
     port, error = validate_proxy(ip, port_text)
@@ -4771,8 +4940,11 @@ def create_proxy():
     if error:
         flash(error)
         return redirect(url_for("index"))
+    if expires_error:
+        flash(expires_error)
+        return redirect(url_for("index"))
 
-    if insert_proxy_with_provider(ip, port, proxy_type, label, provider_id, username, password):
+    if insert_proxy_with_provider(ip, port, proxy_type, label, provider_id, username, password, expires_at):
         flash(f"\u5df2\u6dfb\u52a0\u4ee3\u7406 {ip}:{port}\u3002")
     else:
         flash(f"\u4ee3\u7406 {ip}:{port} \u5df2\u5b58\u5728\u3002")
@@ -4798,13 +4970,17 @@ def import_proxies():
                 invalid += 1
             continue
 
-        ip, port_text, proxy_type, label, username, password = parsed
+        ip, port_text, proxy_type, label, username, password, expires_raw = parsed
         port, error = validate_proxy(ip, port_text)
+        expires_at, expires_error = normalize_expires_at(expires_raw)
         if error or port is None:
             invalid += 1
             continue
+        if expires_error:
+            invalid += 1
+            continue
 
-        if insert_proxy_with_provider(ip, port, proxy_type, label, provider_id, username, password):
+        if insert_proxy_with_provider(ip, port, proxy_type, label, provider_id, username, password, expires_at):
             added += 1
         else:
             skipped += 1
