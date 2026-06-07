@@ -47,6 +47,7 @@ PROXY_CHECK_RETRY_ATTEMPTS = 3
 PROXY_CHECK_RETRY_DELAY_SECONDS = 2
 IPIFY_URL = "https://api.ipify.org?format=json"
 IP_API_JSON_URL = "http://ip-api.com/json/{ip}?fields=status,country,regionName,city,isp,as,query,message"
+IPWHOIS_URL = "https://ipwho.is/{ip}"
 UNKNOWN = "Unknown"
 PROXY_TYPES = ("HTTP", "HTTPS", "SOCKS5", "SOCKS4")
 PROTOCOL_STATUSES = ("端口开放", "协议错误", "认证失败", "超时", "连接重置", "无代理服务")
@@ -1190,7 +1191,7 @@ NODES_TEMPLATE = """
     <style>
         body { background: #f4f6f9; }
         .table td, .table th { vertical-align: middle; }
-        .node-table { min-width: 1540px; table-layout: fixed; font-size: 0.86rem; }
+        .node-table { min-width: 2180px; table-layout: fixed; font-size: 0.84rem; }
         .cell-compact { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .cell-name { width: 170px; }
         .cell-small { width: 90px; }
@@ -1200,7 +1201,7 @@ NODES_TEMPLATE = """
         @media (max-width: 575.98px) {
             main.container-fluid { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
             .mobile-full { width: 100%; }
-            .node-table { min-width: 1360px; font-size: 0.78rem; }
+            .node-table { min-width: 1900px; font-size: 0.76rem; }
         }
     </style>
 </head>
@@ -1269,6 +1270,11 @@ NODES_TEMPLATE = """
                             <th class="cell-small">端口状态</th>
                             <th class="cell-small">真实连接</th>
                             <th class="cell-medium">出口 IP</th>
+                            <th class="cell-medium">出口国家</th>
+                            <th class="cell-medium">出口州/地区</th>
+                            <th class="cell-medium">出口城市</th>
+                            <th class="cell-large">出口 ISP</th>
+                            <th class="cell-medium">出口 ASN</th>
                             <th class="cell-small">TCP 延迟</th>
                             <th class="cell-small">真实延迟</th>
                             <th class="cell-medium">最后检测</th>
@@ -1292,6 +1298,11 @@ NODES_TEMPLATE = """
                                 <td><span class="badge {{ node_status_badge_class(node.status) }}">{{ node.status }}</span></td>
                                 <td><span class="badge {{ node_status_badge_class(node.real_status or '-') }}">{{ node.real_status or "-" }}</span></td>
                                 <td><div class="cell-compact" title="{{ node.exit_ip or '-' }}">{{ node.exit_ip or "-" }}</div></td>
+                                <td><div class="cell-compact" title="{{ node.exit_country or 'Unknown' }}">{{ node.exit_country or "Unknown" }}</div></td>
+                                <td><div class="cell-compact" title="{{ node.exit_region or 'Unknown' }}">{{ node.exit_region or "Unknown" }}</div></td>
+                                <td><div class="cell-compact" title="{{ node.exit_city or 'Unknown' }}">{{ node.exit_city or "Unknown" }}</div></td>
+                                <td><div class="cell-compact" title="{{ node.exit_isp or 'Unknown' }}">{{ node.exit_isp or "Unknown" }}</div></td>
+                                <td><div class="cell-compact" title="{{ node.exit_asn or 'Unknown' }}">{{ node.exit_asn or "Unknown" }}</div></td>
                                 <td>{{ node.latency_ms if node.latency_ms is not none else "-" }}</td>
                                 <td>{{ node.real_latency_ms if node.real_latency_ms is not none else "-" }}</td>
                                 <td>{{ node.last_checked or "-" }}</td>
@@ -1310,7 +1321,7 @@ NODES_TEMPLATE = """
                             </tr>
                         {% else %}
                             <tr>
-                                <td colspan="14" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
+                                <td colspan="19" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
                             </tr>
                         {% endfor %}
                     </tbody>
@@ -2095,6 +2106,11 @@ def init_db() -> None:
                 raw_url TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT '配置正常',
                 exit_ip TEXT NOT NULL DEFAULT '',
+                exit_country TEXT NOT NULL DEFAULT 'Unknown',
+                exit_region TEXT NOT NULL DEFAULT 'Unknown',
+                exit_city TEXT NOT NULL DEFAULT 'Unknown',
+                exit_isp TEXT NOT NULL DEFAULT 'Unknown',
+                exit_asn TEXT NOT NULL DEFAULT 'Unknown',
                 latency_ms INTEGER,
                 real_status TEXT NOT NULL DEFAULT '',
                 real_latency_ms INTEGER,
@@ -2306,6 +2322,11 @@ def ensure_schema(db: sqlite3.Connection) -> None:
             raw_url TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT '配置正常',
             exit_ip TEXT NOT NULL DEFAULT '',
+            exit_country TEXT NOT NULL DEFAULT 'Unknown',
+            exit_region TEXT NOT NULL DEFAULT 'Unknown',
+            exit_city TEXT NOT NULL DEFAULT 'Unknown',
+            exit_isp TEXT NOT NULL DEFAULT 'Unknown',
+            exit_asn TEXT NOT NULL DEFAULT 'Unknown',
             latency_ms INTEGER,
             real_status TEXT NOT NULL DEFAULT '',
             real_latency_ms INTEGER,
@@ -2321,6 +2342,11 @@ def ensure_schema(db: sqlite3.Connection) -> None:
     }
     node_column_defaults = {
         "exit_ip": "TEXT NOT NULL DEFAULT ''",
+        "exit_country": "TEXT NOT NULL DEFAULT 'Unknown'",
+        "exit_region": "TEXT NOT NULL DEFAULT 'Unknown'",
+        "exit_city": "TEXT NOT NULL DEFAULT 'Unknown'",
+        "exit_isp": "TEXT NOT NULL DEFAULT 'Unknown'",
+        "exit_asn": "TEXT NOT NULL DEFAULT 'Unknown'",
         "real_status": "TEXT NOT NULL DEFAULT ''",
         "real_latency_ms": "INTEGER",
         "check_message": "TEXT NOT NULL DEFAULT ''",
@@ -2534,6 +2560,11 @@ def parse_vless_node_url(raw_url: str) -> dict[str, object]:
             "raw_url": raw_url,
             "status": NODE_STATUS_PARSE_FAILED,
             "exit_ip": "",
+            "exit_country": UNKNOWN,
+            "exit_region": UNKNOWN,
+            "exit_city": UNKNOWN,
+            "exit_isp": UNKNOWN,
+            "exit_asn": UNKNOWN,
             "latency_ms": None,
             "real_status": NODE_STATUS_UNAVAILABLE,
             "real_latency_ms": None,
@@ -2563,6 +2594,11 @@ def parse_vless_node_url(raw_url: str) -> dict[str, object]:
         "raw_url": raw_url,
         "status": NODE_STATUS_CONFIG_OK,
         "exit_ip": "",
+        "exit_country": UNKNOWN,
+        "exit_region": UNKNOWN,
+        "exit_city": UNKNOWN,
+        "exit_isp": UNKNOWN,
+        "exit_asn": UNKNOWN,
         "latency_ms": None,
         "real_status": "",
         "real_latency_ms": None,
@@ -2721,6 +2757,47 @@ def xray_diagnostic_message() -> str:
     )
 
 
+def unknown_exit_geo(message: str = "") -> dict[str, str]:
+    return {
+        "exit_country": UNKNOWN,
+        "exit_region": UNKNOWN,
+        "exit_city": UNKNOWN,
+        "exit_isp": UNKNOWN,
+        "exit_asn": UNKNOWN,
+        "geo_message": message,
+    }
+
+
+def query_vless_exit_geo(exit_ip: str) -> dict[str, str]:
+    if not exit_ip:
+        return unknown_exit_geo("出口 IP 为空，跳过地理信息查询。")
+    try:
+        response = requests.get(IPWHOIS_URL.format(ip=exit_ip), timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        return unknown_exit_geo(f"出口 IP 地理信息查询失败：{exc}")
+
+    if not data.get("success", False):
+        return unknown_exit_geo(f"出口 IP 地理信息查询失败：{data.get('message') or 'Unknown error'}")
+
+    connection = data.get("connection") or {}
+    asn_value = connection.get("asn") or data.get("asn") or UNKNOWN
+    if isinstance(asn_value, int):
+        asn_value = f"AS{asn_value}"
+    elif str(asn_value).isdigit():
+        asn_value = f"AS{asn_value}"
+
+    return {
+        "exit_country": data.get("country") or UNKNOWN,
+        "exit_region": data.get("region") or UNKNOWN,
+        "exit_city": data.get("city") or UNKNOWN,
+        "exit_isp": connection.get("isp") or connection.get("org") or UNKNOWN,
+        "exit_asn": str(asn_value or UNKNOWN),
+        "geo_message": "出口 IP 地理信息查询成功。",
+    }
+
+
 def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, object]:
     checked_at = current_time()
     diagnostic = xray_diagnostic_message()
@@ -2729,6 +2806,7 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
             "real_status": NODE_STATUS_UNAVAILABLE,
             "real_latency_ms": None,
             "exit_ip": "",
+            **unknown_exit_geo(),
             "last_checked": checked_at,
             "check_message": f"{diagnostic}；节点字段不完整，无法生成 Xray 配置。",
         }
@@ -2739,6 +2817,7 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
             "real_status": NODE_STATUS_UNAVAILABLE,
             "real_latency_ms": None,
             "exit_ip": "",
+            **unknown_exit_geo(),
             "last_checked": checked_at,
             "check_message": f"{diagnostic}；请安装 xray-core 后再进行真实检测，或设置 XRAY_PATH。",
         }
@@ -2765,6 +2844,7 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
                     "real_status": NODE_STATUS_UNAVAILABLE,
                     "real_latency_ms": None,
                     "exit_ip": "",
+                    **unknown_exit_geo(),
                     "last_checked": checked_at,
                     "check_message": f"{diagnostic}；Xray SOCKS5 本地端口 127.0.0.1:{socks_port} 启动失败。{stderr}".strip(),
                 }
@@ -2783,22 +2863,30 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
                     "real_status": NODE_STATUS_UNAVAILABLE,
                     "real_latency_ms": None,
                     "exit_ip": "",
+                    **unknown_exit_geo(),
                     "last_checked": checked_at,
                     "check_message": f"{diagnostic}；api.ipify.org 未返回出口 IP。",
                 }
             latency_ms = int((time.monotonic() - started_at) * 1000)
+            geo = query_vless_exit_geo(exit_ip)
             return {
                 "real_status": NODE_STATUS_AVAILABLE,
                 "real_latency_ms": latency_ms,
                 "exit_ip": exit_ip,
+                "exit_country": geo["exit_country"],
+                "exit_region": geo["exit_region"],
+                "exit_city": geo["exit_city"],
+                "exit_isp": geo["exit_isp"],
+                "exit_asn": geo["exit_asn"],
                 "last_checked": checked_at,
-                "check_message": f"{diagnostic}；Xray 检测成功，本地 SOCKS5 端口 127.0.0.1:{socks_port}。",
+                "check_message": f"{diagnostic}；Xray 检测成功，本地 SOCKS5 端口 127.0.0.1:{socks_port}；{geo['geo_message']}",
             }
         except Exception as exc:
             return {
                 "real_status": NODE_STATUS_UNAVAILABLE,
                 "real_latency_ms": None,
                 "exit_ip": "",
+                **unknown_exit_geo(),
                 "last_checked": checked_at,
                 "check_message": f"{diagnostic}；{exc}",
             }
@@ -3932,10 +4020,11 @@ def insert_node(parsed_node: dict[str, object]) -> bool:
             INSERT INTO nodes (
                 protocol, name, server_ip, server_port, uuid, security, flow,
                 pbk, sid, transport_type, sni, raw_url, status, latency_ms,
-                exit_ip, real_status, real_latency_ms, check_message,
-                last_message, created_at, last_checked
+                exit_ip, exit_country, exit_region, exit_city, exit_isp, exit_asn,
+                real_status, real_latency_ms, check_message, last_message,
+                created_at, last_checked
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 parsed_node["protocol"],
@@ -3953,6 +4042,11 @@ def insert_node(parsed_node: dict[str, object]) -> bool:
                 parsed_node["status"],
                 parsed_node["latency_ms"],
                 parsed_node.get("exit_ip", ""),
+                parsed_node.get("exit_country", UNKNOWN),
+                parsed_node.get("exit_region", UNKNOWN),
+                parsed_node.get("exit_city", UNKNOWN),
+                parsed_node.get("exit_isp", UNKNOWN),
+                parsed_node.get("exit_asn", UNKNOWN),
                 parsed_node.get("real_status", ""),
                 parsed_node.get("real_latency_ms"),
                 parsed_node.get("check_message", ""),
@@ -3977,13 +4071,19 @@ def update_node_check(node_id: int) -> None:
             """
             UPDATE nodes
             SET status = ?, latency_ms = ?, real_status = ?, real_latency_ms = NULL,
-                exit_ip = '', check_message = ?, last_message = ?, last_checked = ?
+                exit_ip = '', exit_country = ?, exit_region = ?, exit_city = ?,
+                exit_isp = ?, exit_asn = ?, check_message = ?, last_message = ?, last_checked = ?
             WHERE id = ?
             """,
             (
                 port_status,
                 port_latency_ms,
                 NODE_STATUS_UNAVAILABLE,
+                UNKNOWN,
+                UNKNOWN,
+                UNKNOWN,
+                UNKNOWN,
+                UNKNOWN,
                 f"端口检测结果：{port_status}，未执行 Xray 真实出口检测。",
                 f"端口检测结果：{port_status}",
                 port_checked_at,
@@ -3997,7 +4097,8 @@ def update_node_check(node_id: int) -> None:
         """
         UPDATE nodes
         SET status = ?, latency_ms = ?, real_status = ?, real_latency_ms = ?,
-            exit_ip = ?, check_message = ?, last_message = ?, last_checked = ?
+            exit_ip = ?, exit_country = ?, exit_region = ?, exit_city = ?,
+            exit_isp = ?, exit_asn = ?, check_message = ?, last_message = ?, last_checked = ?
         WHERE id = ?
         """,
         (
@@ -4006,6 +4107,11 @@ def update_node_check(node_id: int) -> None:
             result["real_status"],
             result["real_latency_ms"],
             result["exit_ip"],
+            result.get("exit_country", UNKNOWN),
+            result.get("exit_region", UNKNOWN),
+            result.get("exit_city", UNKNOWN),
+            result.get("exit_isp", UNKNOWN),
+            result.get("exit_asn", UNKNOWN),
             result["check_message"],
             result["check_message"],
             result["last_checked"],
@@ -4485,12 +4591,22 @@ def import_nodes():
                 parsed_node["real_status"] = xray_result["real_status"]
                 parsed_node["real_latency_ms"] = xray_result["real_latency_ms"]
                 parsed_node["exit_ip"] = xray_result["exit_ip"]
+                parsed_node["exit_country"] = xray_result.get("exit_country", UNKNOWN)
+                parsed_node["exit_region"] = xray_result.get("exit_region", UNKNOWN)
+                parsed_node["exit_city"] = xray_result.get("exit_city", UNKNOWN)
+                parsed_node["exit_isp"] = xray_result.get("exit_isp", UNKNOWN)
+                parsed_node["exit_asn"] = xray_result.get("exit_asn", UNKNOWN)
                 parsed_node["check_message"] = xray_result["check_message"]
                 parsed_node["last_message"] = xray_result["check_message"]
                 parsed_node["last_checked"] = xray_result["last_checked"]
             else:
                 parsed_node["real_status"] = NODE_STATUS_UNAVAILABLE
                 parsed_node["real_latency_ms"] = None
+                parsed_node["exit_country"] = UNKNOWN
+                parsed_node["exit_region"] = UNKNOWN
+                parsed_node["exit_city"] = UNKNOWN
+                parsed_node["exit_isp"] = UNKNOWN
+                parsed_node["exit_asn"] = UNKNOWN
         else:
             failed += 1
         if insert_node(parsed_node):
