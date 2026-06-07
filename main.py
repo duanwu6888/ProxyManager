@@ -1191,17 +1191,21 @@ NODES_TEMPLATE = """
     <style>
         body { background: #f4f6f9; }
         .table td, .table th { vertical-align: middle; }
-        .node-table { min-width: 1920px; table-layout: fixed; font-size: 0.84rem; }
+        .node-table { min-width: 2020px; table-layout: fixed; font-size: 0.84rem; }
         .cell-compact { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .cell-name { width: 170px; }
         .cell-small { width: 90px; }
         .cell-medium { width: 130px; }
+        .cell-customer-node { width: 220px; }
         .cell-large { width: 190px; }
+        .node-customer-form { min-width: 200px; }
+        .node-customer-form .form-select { min-width: 120px; }
+        .node-customer-form .btn { min-width: 54px; white-space: nowrap; }
         .node-url { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; }
         @media (max-width: 575.98px) {
             main.container-fluid { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
             .mobile-full { width: 100%; }
-            .node-table { min-width: 1700px; font-size: 0.76rem; }
+            .node-table { min-width: 1780px; font-size: 0.76rem; }
         }
     </style>
 </head>
@@ -1271,7 +1275,7 @@ NODES_TEMPLATE = """
                     <thead class="table-light">
                         <tr>
                             <th class="cell-name">名称</th>
-                            <th class="cell-medium">客户</th>
+                            <th class="cell-customer-node">客户</th>
                             <th class="cell-small">协议</th>
                             <th class="cell-medium">服务器 IP</th>
                             <th class="cell-small">端口</th>
@@ -1294,7 +1298,7 @@ NODES_TEMPLATE = """
                             <tr>
                                 <td><div class="cell-compact" title="{{ node.name or '-' }}">{{ node.name or "-" }}</div></td>
                                 <td>
-                                    <form action="{{ url_for('assign_node_customer', node_id=node.id) }}" method="post" class="d-flex gap-1">
+                                    <form action="{{ url_for('assign_node_customer', node_id=node.id) }}" method="post" class="d-flex align-items-center gap-1 flex-nowrap node-customer-form">
                                         <select name="customer_id" class="form-select form-select-sm">
                                             <option value="">未分配</option>
                                             {% for customer in customers %}
