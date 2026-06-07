@@ -25,6 +25,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 
 app = Flask(__name__)
+APP_DIR = Path(__file__).resolve().parent
 
 
 def resolve_database_path(database_url: str) -> str:
@@ -64,6 +65,7 @@ NODE_STATUSES = (
     NODE_STATUS_UNAVAILABLE,
 )
 XRAY_TEST_TIMEOUT_SECONDS = 20
+XRAY_SOCKS_TEST_PORT = 10888
 STATE_FILTERS = ("California", "New York", "Texas", "Florida")
 LOCATION_DISPLAY_NAMES = {
     "": "-",
@@ -1188,7 +1190,7 @@ NODES_TEMPLATE = """
     <style>
         body { background: #f4f6f9; }
         .table td, .table th { vertical-align: middle; }
-        .node-table { min-width: 1340px; table-layout: fixed; font-size: 0.86rem; }
+        .node-table { min-width: 1540px; table-layout: fixed; font-size: 0.86rem; }
         .cell-compact { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .cell-name { width: 170px; }
         .cell-small { width: 90px; }
@@ -1198,7 +1200,7 @@ NODES_TEMPLATE = """
         @media (max-width: 575.98px) {
             main.container-fluid { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
             .mobile-full { width: 100%; }
-            .node-table { min-width: 1180px; font-size: 0.78rem; }
+            .node-table { min-width: 1360px; font-size: 0.78rem; }
         }
     </style>
 </head>
@@ -1207,7 +1209,7 @@ NODES_TEMPLATE = """
         <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 mb-4">
             <div>
                 <h1 class="h3 mb-1">节点管理</h1>
-                <div class="text-secondary">导入和管理 VLESS / Reality 节点链接，当前只做解析和 TCP 端口检测。</div>
+                <div class="text-secondary">导入和管理 VLESS / Reality 节点链接，保留 TCP 端口检测，并通过 Xray-core 验证真实出口 IP。</div>
             </div>
             <div class="d-flex flex-column flex-sm-row gap-2">
                 <a href="{{ url_for('index') }}" class="btn btn-outline-secondary mobile-full">返回首页</a>
@@ -1222,6 +1224,12 @@ NODES_TEMPLATE = """
             {% endif %}
         {% endwith %}
 
+        {% if not xray_available %}
+            <div class="alert alert-warning border-0 shadow-sm">
+                请安装 xray-core 后再进行真实检测，或设置环境变量 <code>XRAY_PATH</code> 指向 xray 可执行文件。未安装时仍会保留 TCP 端口检测。
+            </div>
+        {% endif %}
+
         <section class="card border-0 shadow-sm mb-4">
             <div class="card-header bg-white fw-semibold">批量导入 VLESS 节点</div>
             <div class="card-body">
@@ -1233,7 +1241,7 @@ NODES_TEMPLATE = """
                         placeholder="vless://uuid@ip:port?security=reality&flow=xtls-rprx-vision&pbk=xxx&sid=xxx&type=tcp&sni=xxx#name"
                     ></textarea>
                     <div class="d-flex flex-column flex-sm-row justify-content-between gap-2">
-                        <div class="form-text">每行一个 VLESS 链接。预留 Xray 核心检测和 Clash 配置导出。</div>
+                        <div class="form-text">每行一个 VLESS 链接。导入时会先做 TCP 端口检测，端口开放后再用 Xray-core 访问 api.ipify.org 获取出口 IP。</div>
                         <button class="btn btn-primary mobile-full" type="submit">批量导入</button>
                     </div>
                 </form>
@@ -1257,11 +1265,13 @@ NODES_TEMPLATE = """
                             <th class="cell-small">端口</th>
                             <th class="cell-large">SNI</th>
                             <th class="cell-large">Reality</th>
-                            <th class="cell-small">状态</th>
+                            <th class="cell-small">端口状态</th>
+                            <th class="cell-small">真实连接</th>
                             <th class="cell-medium">出口 IP</th>
-                            <th class="cell-small">延迟</th>
+                            <th class="cell-small">TCP 延迟</th>
+                            <th class="cell-small">真实延迟</th>
                             <th class="cell-medium">最后检测</th>
-                            <th class="cell-large">检测消息</th>
+                            <th class="cell-large">错误原因 / 检测消息</th>
                             <th class="cell-medium text-end">操作</th>
                         </tr>
                     </thead>
@@ -1279,10 +1289,12 @@ NODES_TEMPLATE = """
                                     </div>
                                 </td>
                                 <td><span class="badge {{ node_status_badge_class(node.status) }}">{{ node.status }}</span></td>
+                                <td><span class="badge {{ node_status_badge_class(node.real_status or '-') }}">{{ node.real_status or "-" }}</span></td>
                                 <td><div class="cell-compact" title="{{ node.exit_ip or '-' }}">{{ node.exit_ip or "-" }}</div></td>
                                 <td>{{ node.latency_ms if node.latency_ms is not none else "-" }}</td>
+                                <td>{{ node.real_latency_ms if node.real_latency_ms is not none else "-" }}</td>
                                 <td>{{ node.last_checked or "-" }}</td>
-                                <td><div class="cell-compact" title="{{ node.last_message or '-' }}">{{ node.last_message or "-" }}</div></td>
+                                <td><div class="cell-compact" title="{{ node.check_message or node.last_message or '-' }}">{{ node.check_message or node.last_message or "-" }}</div></td>
                                 <td>
                                     <div class="d-flex justify-content-end gap-1">
                                         <button class="btn btn-sm btn-outline-secondary copy-node-btn" type="button" data-node-url="{{ node.raw_url }}">复制</button>
@@ -1297,7 +1309,7 @@ NODES_TEMPLATE = """
                             </tr>
                         {% else %}
                             <tr>
-                                <td colspan="12" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
+                                <td colspan="14" class="text-center text-secondary py-5">暂无节点，请先导入 VLESS 链接。</td>
                             </tr>
                         {% endfor %}
                     </tbody>
@@ -2022,6 +2034,9 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT '配置正常',
                 exit_ip TEXT NOT NULL DEFAULT '',
                 latency_ms INTEGER,
+                real_status TEXT NOT NULL DEFAULT '',
+                real_latency_ms INTEGER,
+                check_message TEXT NOT NULL DEFAULT '',
                 last_message TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 last_checked TEXT
@@ -2230,6 +2245,9 @@ def ensure_schema(db: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT '配置正常',
             exit_ip TEXT NOT NULL DEFAULT '',
             latency_ms INTEGER,
+            real_status TEXT NOT NULL DEFAULT '',
+            real_latency_ms INTEGER,
+            check_message TEXT NOT NULL DEFAULT '',
             last_message TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             last_checked TEXT
@@ -2241,11 +2259,26 @@ def ensure_schema(db: sqlite3.Connection) -> None:
     }
     node_column_defaults = {
         "exit_ip": "TEXT NOT NULL DEFAULT ''",
+        "real_status": "TEXT NOT NULL DEFAULT ''",
+        "real_latency_ms": "INTEGER",
+        "check_message": "TEXT NOT NULL DEFAULT ''",
         "last_message": "TEXT NOT NULL DEFAULT ''",
     }
     for column, definition in node_column_defaults.items():
         if column not in node_columns:
             db.execute(f"ALTER TABLE nodes ADD COLUMN {column} {definition}")
+    db.execute(
+        """
+        UPDATE nodes
+        SET real_status = status,
+            real_latency_ms = latency_ms,
+            check_message = COALESCE(NULLIF(check_message, ''), NULLIF(last_message, ''), '历史 Xray 检测结果'),
+            status = ?
+        WHERE status IN (?, ?)
+          AND COALESCE(real_status, '') = ''
+        """,
+        (NODE_STATUS_PORT_OPEN, NODE_STATUS_AVAILABLE, NODE_STATUS_UNAVAILABLE),
+    )
 
 
 def ensure_table(db: sqlite3.Connection, _name: str, ddl: str) -> None:
@@ -2440,6 +2473,9 @@ def parse_vless_node_url(raw_url: str) -> dict[str, object]:
             "status": NODE_STATUS_PARSE_FAILED,
             "exit_ip": "",
             "latency_ms": None,
+            "real_status": NODE_STATUS_UNAVAILABLE,
+            "real_latency_ms": None,
+            "check_message": "VLESS 链接解析失败",
             "last_message": "VLESS 链接解析失败",
             "last_checked": None,
         }
@@ -2466,6 +2502,9 @@ def parse_vless_node_url(raw_url: str) -> dict[str, object]:
         "status": NODE_STATUS_CONFIG_OK,
         "exit_ip": "",
         "latency_ms": None,
+        "real_status": "",
+        "real_latency_ms": None,
+        "check_message": "配置解析成功",
         "last_message": "配置解析成功",
         "last_checked": None,
     }
@@ -2535,7 +2574,14 @@ def build_xray_config(node: dict[str, object] | sqlite3.Row, socks_port: int) ->
     }
 
 
-def reserve_local_port() -> int:
+def reserve_local_port(preferred_port: int | None = None) -> int:
+    if preferred_port:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", preferred_port))
+                return preferred_port
+            except OSError:
+                pass
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
@@ -2553,31 +2599,42 @@ def wait_for_local_port(port: int, timeout_seconds: float = 5.0) -> bool:
 
 
 def xray_binary_path() -> str | None:
-    return os.environ.get("XRAY_PATH", "").strip() or shutil.which("xray")
+    configured_path = os.environ.get("XRAY_PATH", "").strip()
+    if configured_path and Path(configured_path).exists():
+        return configured_path
+    bundled_name = "xray.exe" if os.name == "nt" else "xray"
+    bundled_path = APP_DIR / "tools" / "xray" / bundled_name
+    if bundled_path.exists():
+        return str(bundled_path)
+    return shutil.which("xray")
+
+
+def is_xray_available() -> bool:
+    return xray_binary_path() is not None
 
 
 def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, object]:
     checked_at = current_time()
     if not node["server_ip"] or not node["server_port"] or not node["uuid"]:
         return {
-            "status": NODE_STATUS_PARSE_FAILED,
-            "latency_ms": None,
+            "real_status": NODE_STATUS_UNAVAILABLE,
+            "real_latency_ms": None,
             "exit_ip": "",
             "last_checked": checked_at,
-            "last_message": "节点字段不完整，无法生成 Xray 配置。",
+            "check_message": "节点字段不完整，无法生成 Xray 配置。",
         }
 
     xray_path = xray_binary_path()
     if not xray_path:
         return {
-            "status": NODE_STATUS_UNAVAILABLE,
-            "latency_ms": None,
+            "real_status": NODE_STATUS_UNAVAILABLE,
+            "real_latency_ms": None,
             "exit_ip": "",
             "last_checked": checked_at,
-            "last_message": "未找到 Xray-core。请安装 xray 或设置 XRAY_PATH。",
+            "check_message": "请安装 xray-core 后再进行真实检测，或设置 XRAY_PATH。",
         }
 
-    socks_port = reserve_local_port()
+    socks_port = reserve_local_port(XRAY_SOCKS_TEST_PORT)
     config = build_xray_config(node, socks_port)
     process = None
     with tempfile.TemporaryDirectory(prefix="proxymanager-xray-") as tmpdir:
@@ -2596,11 +2653,11 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
                 if process.poll() is not None and process.stderr:
                     stderr = process.stderr.read()[-300:]
                 return {
-                    "status": NODE_STATUS_UNAVAILABLE,
-                    "latency_ms": None,
+                    "real_status": NODE_STATUS_UNAVAILABLE,
+                    "real_latency_ms": None,
                     "exit_ip": "",
                     "last_checked": checked_at,
-                    "last_message": f"Xray SOCKS5 本地端口启动失败。{stderr}".strip(),
+                    "check_message": f"Xray SOCKS5 本地端口 127.0.0.1:{socks_port} 启动失败。{stderr}".strip(),
                 }
             response = requests.get(
                 IPIFY_URL,
@@ -2614,27 +2671,27 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
             exit_ip = response.json().get("ip", "")
             if not exit_ip:
                 return {
-                    "status": NODE_STATUS_UNAVAILABLE,
-                    "latency_ms": None,
+                    "real_status": NODE_STATUS_UNAVAILABLE,
+                    "real_latency_ms": None,
                     "exit_ip": "",
                     "last_checked": checked_at,
-                    "last_message": "api.ipify.org 未返回出口 IP。",
+                    "check_message": "api.ipify.org 未返回出口 IP。",
                 }
             latency_ms = int((time.monotonic() - started_at) * 1000)
             return {
-                "status": NODE_STATUS_AVAILABLE,
-                "latency_ms": latency_ms,
+                "real_status": NODE_STATUS_AVAILABLE,
+                "real_latency_ms": latency_ms,
                 "exit_ip": exit_ip,
                 "last_checked": checked_at,
-                "last_message": "Xray 检测成功。",
+                "check_message": f"Xray 检测成功，本地 SOCKS5 端口 127.0.0.1:{socks_port}。",
             }
         except Exception as exc:
             return {
-                "status": NODE_STATUS_UNAVAILABLE,
-                "latency_ms": None,
+                "real_status": NODE_STATUS_UNAVAILABLE,
+                "real_latency_ms": None,
                 "exit_ip": "",
                 "last_checked": checked_at,
-                "last_message": str(exc),
+                "check_message": str(exc),
             }
         finally:
             if process is not None:
@@ -2647,6 +2704,8 @@ def check_node_with_xray(node: dict[str, object] | sqlite3.Row) -> dict[str, obj
 
 
 def node_status_badge_class(status: str) -> str:
+    if not status or status == "-":
+        return "text-bg-secondary"
     if status in {NODE_STATUS_CONFIG_OK, NODE_STATUS_PORT_OPEN, NODE_STATUS_AVAILABLE}:
         return "text-bg-success"
     if status == NODE_STATUS_PARSE_FAILED:
@@ -3764,9 +3823,10 @@ def insert_node(parsed_node: dict[str, object]) -> bool:
             INSERT INTO nodes (
                 protocol, name, server_ip, server_port, uuid, security, flow,
                 pbk, sid, transport_type, sni, raw_url, status, latency_ms,
-                exit_ip, last_message, created_at, last_checked
+                exit_ip, real_status, real_latency_ms, check_message,
+                last_message, created_at, last_checked
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 parsed_node["protocol"],
@@ -3784,6 +3844,9 @@ def insert_node(parsed_node: dict[str, object]) -> bool:
                 parsed_node["status"],
                 parsed_node["latency_ms"],
                 parsed_node.get("exit_ip", ""),
+                parsed_node.get("real_status", ""),
+                parsed_node.get("real_latency_ms"),
+                parsed_node.get("check_message", ""),
                 parsed_node.get("last_message", ""),
                 now,
                 parsed_node["last_checked"],
@@ -3804,10 +3867,19 @@ def update_node_check(node_id: int) -> None:
         get_db().execute(
             """
             UPDATE nodes
-            SET status = ?, latency_ms = ?, exit_ip = '', last_message = ?, last_checked = ?
+            SET status = ?, latency_ms = ?, real_status = ?, real_latency_ms = NULL,
+                exit_ip = '', check_message = ?, last_message = ?, last_checked = ?
             WHERE id = ?
             """,
-            (port_status, port_latency_ms, f"端口检测结果：{port_status}", port_checked_at, node_id),
+            (
+                port_status,
+                port_latency_ms,
+                NODE_STATUS_UNAVAILABLE,
+                f"端口检测结果：{port_status}，未执行 Xray 真实出口检测。",
+                f"端口检测结果：{port_status}",
+                port_checked_at,
+                node_id,
+            ),
         )
         get_db().commit()
         return
@@ -3815,14 +3887,18 @@ def update_node_check(node_id: int) -> None:
     get_db().execute(
         """
         UPDATE nodes
-        SET status = ?, latency_ms = ?, exit_ip = ?, last_message = ?, last_checked = ?
+        SET status = ?, latency_ms = ?, real_status = ?, real_latency_ms = ?,
+            exit_ip = ?, check_message = ?, last_message = ?, last_checked = ?
         WHERE id = ?
         """,
         (
-            result["status"],
-            result["latency_ms"],
+            port_status,
+            port_latency_ms,
+            result["real_status"],
+            result["real_latency_ms"],
             result["exit_ip"],
-            result["last_message"],
+            result["check_message"],
+            result["check_message"],
             result["last_checked"],
             node_id,
         ),
@@ -4260,6 +4336,7 @@ def nodes_page():
         NODES_TEMPLATE,
         nodes=fetch_nodes(),
         node_status_badge_class=node_status_badge_class,
+        xray_available=is_xray_available(),
     )
 
 
@@ -4282,13 +4359,18 @@ def import_nodes():
             parsed_node["latency_ms"] = latency_ms
             parsed_node["last_checked"] = checked_at
             parsed_node["last_message"] = f"端口检测结果：{status}"
+            parsed_node["check_message"] = f"端口检测结果：{status}"
             if status == NODE_STATUS_PORT_OPEN:
                 xray_result = check_node_with_xray(parsed_node)
-                parsed_node["status"] = xray_result["status"]
-                parsed_node["latency_ms"] = xray_result["latency_ms"]
+                parsed_node["real_status"] = xray_result["real_status"]
+                parsed_node["real_latency_ms"] = xray_result["real_latency_ms"]
                 parsed_node["exit_ip"] = xray_result["exit_ip"]
-                parsed_node["last_message"] = xray_result["last_message"]
+                parsed_node["check_message"] = xray_result["check_message"]
+                parsed_node["last_message"] = xray_result["check_message"]
                 parsed_node["last_checked"] = xray_result["last_checked"]
+            else:
+                parsed_node["real_status"] = NODE_STATUS_UNAVAILABLE
+                parsed_node["real_latency_ms"] = None
         else:
             failed += 1
         if insert_node(parsed_node):
